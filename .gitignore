@@ -6,3 +6,6 @@ data/runs/
 data/*.zip
 data/generate_*.txt
 __pycache__/
+*.png
+*.jpg
+*.jpeg

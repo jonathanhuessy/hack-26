@@ -45,6 +45,8 @@ Verification scripts (each prints PASS/FAIL):
 
 Raw, noise-free time series at 100 Hz with per-sample labels. Sensor noise and features are added afterwards, so you can change them without re-simulating.
 
+Google drive link: [here](https://drive.google.com/drive/folders/1F0uMHkr00N4wtjrQoFY74cG6VwrlfHsj?usp=drive_link)
+
 ```matlab
 idx = load('data/index.mat').idx;                  % one row per run: split, class, dm, kf, seeds, ...
 r   = load('data/runs/run_00001.mat');             % r.tt (timetable) and r.meta (struct)

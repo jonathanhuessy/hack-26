@@ -81,7 +81,7 @@ Yes, that's the right structure. Recommended details:
 Yes, in two bands that match the physics:
 
 - **Low band (below about 0.2 Hz):** steady-state yaw gain and $a_y / (V_x r)$. This carries the understeer change ($K_{us}$), mainly on the 15 km/h straights.
-- **Mid band (about 0.2–1.5 Hz):** gain and phase of $\delta \to r$, i.e. the yaw lag $\tau$. This is excited by the turn-in and turn-out ramps at 5 km/h.
+- **Mid band (about 0.2–1.5 Hz, extend to about 3 Hz after the P6 finding):** gain and phase of $\delta \to r$ and the frequency and height of the lightly damped mode at 1.1–1.4 Hz. This is excited by the turn ramps and the disturbances.
 - **High band (above about 3 Hz):** mostly sensor noise and vibration with no parameter information. Use it at most to normalise for the noise level.
 - **Implementation:** fixed IIR band-pass filters (coefficients designed once offline with Signal Processing Toolbox and stored as constants) plus band power and cross-power. On the Pi, `filter` maps one-to-one to `scipy.signal.lfilter`. `tfestimate` is fine for offline exploration but stays off the deployment path.
 - **Portability rule for all deployed feature code:** only basic operations (filter with fixed coefficients, sums, max, cross-correlation written out explicitly), so the Python port is line-by-line.
@@ -98,9 +98,9 @@ Yes, in two bands that match the physics:
 - [x] P4. Plant verification
 - [x] P5. Trajectory check
 - [x] P6. Detectability and separability check (go/no-go) — decision: A restricted to rear-hitch mounts
-- [ ] P7. Scenario grid, labels and data generation — generator written, full generation running; tick after `scripts/check_dataset.m` passes
-- [ ] P8. Smoke test of a single feature
-- [ ] P9. Storage — files written by P7; zip and share pending
+- [x] P7. Scenario grid, labels and data generation — 1420 runs, `scripts/check_dataset.m` passes
+- [x] P8. Smoke test of a single feature — turn-in lag does not separate, spectral features do (see P8 results)
+- [x] P9. Storage — `data/tractor_dataset.zip` (0.93 GB, contains `runs/`, `index.mat`, `config.mat`); upload to Google Drive pending
 - [ ] P10. Pi readiness — `pi/plant.py` ported and passing the parity test on this PC; Pi-side run still open
 
 ### P1. Project skeleton
@@ -175,6 +175,12 @@ This replaces the earlier "Phase 0" and is the go/no-go gate for the dataset des
 - On about 50 runs per class, add sensor noise and compute one simple feature: turn-in lag from cross-correlation of $\delta$ and $r$.
 - Show histograms by class. This is not the final pipeline, only evidence that classification will work.
 
+**P8 results** (50 train runs per class, measured signals with sensor noise, per-run median over the 3 turns; `data/smoke_feature.png`):
+- **Turn-in lag does not work:** AUC 0.50 against nominal for the largest A changes, 0.64 for $k_f < 0.75$. This matches the P6 physics finding (no first-order lag story).
+- **Resonance peak frequency of the yaw rate in the turns works for B:** AUC 1.00 for $k_f < 0.75$, 0.79 for all B. It separates the largest A changes only moderately (0.76).
+- **A multivariate check is much stronger:** a linear discriminant on 12 log band powers ($r$ and $a_y$, bands 0.2–0.6, 0.6–1, 1–1.5, 1.5–2, 2–3, 3–5 Hz, over the turn windows) gives 77 % accuracy for the 3 classes nominal / A / B per run, and 100 % for nominal vs A with $\Delta m \ge 1500$ kg, 5-fold cross-validated. A+B and the small magnitudes are the hard part, which is what the MLP and the median over K turns are for.
+- **Straight-only features were weak** in a quick check (AUC 0.5–0.65 for $\delta \to r$ gain, $\delta \to a_y$ gain, resonance on the straights). The turns carry most of the signal.
+
 ### P9. Storage
 - `data/runs/run_00001.mat` … : one file per run, containing timetable `tt` (signals from P3, stored as `single` at 100 Hz) and struct `meta`. About 1 MB per run, about 1.4 GB in total.
 - `data/index.mat`: run index table from P7.
@@ -192,62 +198,132 @@ This replaces the earlier "Phase 0" and is the go/no-go gate for the dataset des
 2. **Plant correct:** Simulink vs `lsim` maximum relative error below 1e-6. Steady-state yaw rate within 0.5 % of the analytic value. Parameter step and ramp visible in the logged parameter signals.
 3. **Signal present:** P6 shows $d^2 \ge 25$ for the smallest change that will be labelled "changed", and $|\cos\theta_{AB}| < 0.9$ (or a documented switch to fallback targets).
 4. **Dataset complete:** every run in the index has a file, no NaN or Inf, classes balanced, splits fixed. Regenerating any run from its seeds reproduces it exactly.
-5. **Smoke test:** the turn-in lag feature visibly separates nominal from the largest A change.
+5. **Smoke test:** a simple spectral feature (resonance peak frequency, or log band powers with a linear discriminant) visibly separates nominal from the largest A changes and from B. The turn-in lag feature from the original plan does not, which is why the features in H1 are spectral.
 6. **Pi ready:** Python environment works on the Pi, `pi/plant.py` passes the parity test against Simulink, and the real-time factor is measured.
 
 ## Hackathon day
 
-### H1. Features (MATLAB functions, compatible with code generation)
-- Windowing per turn (event-based) as described in the inference architecture section.
-- Time-domain features:
-  - Turn-in and turn-out lag between $\delta$ and $r$.
-  - Steady-state yaw gain in the turn compared with $V_x\delta/L$.
-  - Small-signal $\delta \to r$ gain on the preceding straight.
-  - Residuals of the nominal model: RMS and peak for $r$ and $a_y$.
-  - $a_y / (V_x r)$.
-  - Turn speed.
-- Band features: low and mid band gain and phase, as described in the frequency-band section.
+**Starting point:** the repo is cloned, the dataset is unzipped into `data/` (`scripts/check_dataset.m` passes), MATLAB R2024b runs, and the Pi has passed the plant parity test (P10). Nothing below needs the real tractor.
 
-### H2. Training
-- Explore first with Statistics and Machine Learning: feature ranking (`fscmrmr`), quick baselines (`fitcensemble`, `fitcnet`) to see the achievable accuracy.
-- Deployed models must be portable:
-  - Classifier: small MLP with 4 classes. Either `fitcnet` (weights in `LayerWeights`/`LayerBiases`) or Deep Learning Toolbox (`featureInputLayer` → 2 × fully connected 16–32 ReLU → softmax).
-  - Regressor: same structure with 2 outputs ($\Delta m$, $k_f$), via `fitrnet` or `trainnet`.
-  - If a linear model (`fitclinear`, linear regression) is almost as good, prefer it: even simpler to port and to explain.
-- Train on the train split, tune on the validation split.
-- Export weights, biases and feature normalisation (mean, std) to `models/export/weights.mat`.
+### Where everything lives (overview)
 
-### H3. Evaluation
-On the test split:
-- Confusion matrix.
+```mermaid
+flowchart LR
+  D[(dataset: runs + index)] --> W["MATLAB: find turns, cut windows"]
+  W --> F["MATLAB: turnFeatures"]
+  F --> T["MATLAB: train classifier and regressor"]
+  T --> X[("models/export/weights.mat")]
+  X --> S["Simulink demo: plant, noise, streaming detector"]
+  X --> P["Python on the Pi: plant, noise, streaming detector"]
+  F -. "same function inside a MATLAB Function block" .-> S
+  F -. "line-by-line port" .-> P
+```
+
+| Element | MATLAB (scripts, PC) | Simulink (PC) | Python (Pi) |
+|---|---|---|---|
+| Plant | done (`simulatePlant`) | done (`tractor_plant.slx`) | done (`pi/plant.py`) |
+| Sensor noise | `addSensorNoise` (done) | Random Number blocks plus bias constants | NumPy |
+| Turn trigger and windowing | offline `findTurns` for training | state machine in the streaming detector | the same state machine as a class |
+| Features | `turnFeatures`, **single source of truth** | called from a MATLAB Function block | `pi/features.py`, line-by-line port |
+| Training | **only here** (Statistics and ML, Deep Learning) | no | no |
+| Forward pass of the model | `mlpForward` (used in Simulink and for checks) | MATLAB Function block | `pi/model.py` |
+| Evaluation and plots | **only here** | no | no |
+| Demo and dashboard | no | scopes, XY plot, verdict display | terminal or matplotlib |
+| Parity tests | export test vectors | compare against offline results | compare against test vectors |
+
+Rules: train only in MATLAB. Simulink and Python never see the dataset files for training; they only get `weights.mat` and (for checks) test vectors. Simulink is the PC demo and the proof that the algorithm works sample by sample (streaming). Python is the edge deployment.
+
+### Contracts to agree on first (so three people can work in parallel)
+
+1. **Window:** one window per turn, from 5 s before turn entry to 5 s after turn exit, as 4 columns of measured signals `[deltaMeas VxMeas rMeas ayMeas]` at 100 Hz, plus the preceding straight (the last 20 s before the window, speed above 3 m/s). Turn entry: $|\delta|$ (low-passed at 1 Hz) rises above 5°. Turn exit: it falls below 3° (hysteresis). Only measured signals are used, never `segment` or any label.
+2. **Feature function:** `x = change_detector.turnFeatures(win, straight, fs)` returns a row vector, and `change_detector.turnFeatureNames()` its names in a fixed order. Only basic operations (filter with fixed coefficients, sums, max, explicit cross-correlation), so the Python port is line-by-line.
+3. **Weights file** `models/export/weights.mat`: `mu`, `sigma` (feature normalisation), `featureNames`, classifier `W1 b1 W2 b2 W3 b3` and regressor `V1 c1 V2 c2 V3 c3` (ReLU hidden layers, softmax on the classifier), `classNames`. A linear model is the same file with a single layer.
+4. **Streaming detector:** `[out, newVerdict] = change_detector.detectorStep(u, W)` with `u = [delta Vx r ay]` for one sample, internal state in `persistent` variables. When a turn ends it computes features and the model outputs and sets `newVerdict`. `out` holds the last class probabilities (4), the regression outputs ($\Delta m$, $k_f$) and the median over the last K = 3 turns. The offline `findTurns` must use exactly the same trigger thresholds.
+5. **Test vectors** `pi/test_vectors/detector_<class>.mat`: measured inputs of one run, plus expected feature vectors, probabilities, regression outputs and verdicts per turn.
+
+### Parallel tracks
+
+| Track | Owner skills | Starts with | Needs from the others |
+|---|---|---|---|
+| A. Data and ML (MATLAB) | MATLAB, ML | H1, H2, H3 | nothing |
+| B. Simulink demo | Simulink | H4, using dummy weights | contracts 1 to 4; real weights from A later |
+| C. Pi port (Python) | Python | H5, using dummy weights | contracts 1 to 5; real weights from A later |
+
+Tracks B and C start with random weights so the plumbing (buffer, trigger, feature call, verdict display) is finished before training is. When A exports real weights, B and C only swap the file.
+
+### H0. Setup (everyone)
+- Pull the repo, unzip the dataset into `data/`, run `scripts/check_dataset.m`, open `scripts/smoke_feature.m` and read the P8 result: it says which feature ideas carry signal.
+- Load one run with `load('data/runs/run_00001.mat')` and look at `tt`: clean signals, labels and `addSensorNoise` for the measured signals (README, section "Dataset").
+
+### H1. Windowing and features (MATLAB, Track A)
+- **Do:** write `change_detector.findTurns` (the trigger of contract 1, vectorised or a simple loop) and `change_detector.turnFeatures`. Explore interactively in a script `scripts/explore_features.m`. Check that `findTurns` on the measured $\delta$ finds the same 3 turns as the `turnIdx` label on at least 99 % of the runs.
+- **Then:** `scripts/build_features.m` loops over all runs with a fixed noise seed per run (seed = 5000 + run id), cuts the windows, computes features and saves `data/features.mat`: one row per turn with the feature vector, run id, split, turn number, class, `dm`, `kf`.
+- **Feature candidates** (keep what `fscmrmr` ranks high, drop the rest). The physics finding from P6 says most information sits in a lightly damped mode at about 1.1 to 1.4 Hz at 5 km/h, so spectral features matter more than a first-order lag:
+  - Frequency and relative height of the yaw-rate spectrum peak between about 0.6 and 3 Hz, and the same for $a_y$ (from `pwelch` with fixed settings, or a bank of fixed band-pass filters on the Pi).
+  - Band power of $r$ and $a_y$ in 0.2–0.6, 0.6–1.0, 1.0–2.0 and 2.0–3.0 Hz, normalised by the power above 5 Hz (noise level).
+  - Gain and phase of $\delta \to r$ in the turn and on the preceding straight (explicit cross-spectrum or cross-correlation).
+  - Turn-in and turn-out lag from cross-correlation.
+  - Steady-state yaw gain in the turn compared with $V_x\delta/L$, and $a_y/(V_x r)$.
+  - Turn speed and straight speed (so the classifier can normalise for them).
+- **Done when:** `data/features.mat` exists, has no NaN, and a quick `fitcdiscr` on train/val gives accuracy clearly above chance on the 4 classes.
+
+### H2. Training (MATLAB, Track A)
+- **Explore:** feature ranking (`fscmrmr`), quick baselines (`fitcdiscr`, `fitclinear`, `fitcensemble`, `fitcnet`) to see what accuracy is achievable. Tree ensembles are for exploration only, they will not be deployed.
+- **Train the deployable models in `scripts/train_models.m`:**
+  - Classifier: small MLP with 4 classes (`fitcnet`, or Deep Learning Toolbox `featureInputLayer` → 2 × fully connected 16–32 ReLU → softmax with `trainnet`).
+  - Regressor: same structure with 2 outputs ($\Delta m$, $k_f$), only trained on turns where the property is active (use `dm` and `kf` as targets, `cls` to select). Gate the regressor outputs with the classifier on deployment: report $\Delta m$ only if the class contains A, $k_f$ only if it contains B.
+  - If a linear model (`fitclinear`, linear regression) is almost as good, prefer it.
+- Fit on the train split, tune on val. Never touch test until H3.
+- **Export:** `scripts/export_weights.m` writes `models/export/weights.mat` (contract 3) and checks that `mlpForward` reproduces `predict` on 100 validation turns to 1e-5.
+- **Done when:** `weights.mat` exists and the forward-pass check passes.
+
+### H3. Evaluation (MATLAB, Track A)
+On the test split, in `scripts/evaluate_models.m`:
+- Confusion matrix per turn, and after taking the median over K = 3 turns.
 - False-alarm rate on nominal runs.
 - Magnitude errors: $|\Delta m|$ MAE and $|k_f|$ MAE.
-- Detection delay (in turns) on the step runs.
-- Tracking on the drift runs.
+- On the demo runs: detection delay in turns after a step, and the tracking of $\Delta m$ over turns for the drift runs.
+- Save the figures to `data/results/` for the pitch.
 
-### H4. Simulink inference model `models/tractor_change_detection.slx`
-- References `tractor_plant.slx` as a Model block, followed by:
-  - Sensors subsystem.
-  - Ring buffer and Feature Extraction (MATLAB Function block).
-  - Triggered Classifier and Regressor as MATLAB Function blocks doing the MLP forward pass with the exported weights (identical maths to the Pi port).
-  - Median over the last K = 3 turns.
-  - Dashboard: XY plot, $r$ measured vs nominal, current verdict.
-- Demo: nominal for swath 1, +1500 kg rear before swath 2. The verdict should update after turns 2 and 3.
+### H4. Streaming detector and Simulink demo (Track B)
+- **MATLAB first:** `change_detector.detectorStep` (contract 4) as a plain MATLAB function with persistent state: ring buffer, trigger state machine, `turnFeatures`, `mlpForward`, median over the last K turns. Test it in a loop over one demo run (`scripts/test_detector_stream.m`): it must give the same features and verdicts as the offline path (H1) on the same measured signals. Track B can write the buffer, trigger and verdict logic before `turnFeatures` exists, with a stub that returns zeros.
+- **Simulink model `models/tractor_change_detection.slx`:**
+  - Plant: a copy of the plant blocks as a subsystem (simplest, because the parameter schedule variables then stay in this model), or a Model block with model arguments.
+  - Inputs: $\delta$ and $V_x$ from a maneuver profile (From Workspace), disturbance from `makeDisturbance`.
+  - Sensors subsystem: Random Number blocks for noise, constants for biases, a discrete band-pass for the accelerometer vibration. Levels from `config.mat`.
+  - Detector: one MATLAB Function block calling `detectorStep`, sample time 0.01 s, weights as a parameter loaded from `weights.mat`.
+  - Dashboard: XY path with turn markers, measured vs nominal-model yaw rate, and the verdict (class, $\Delta m$, $k_f$) updating after each turn.
+  - Replay mode: a switch that feeds the measured signals of a stored demo run instead of the live plant. Use it to prove that Simulink gives the same verdicts as the offline MATLAB path.
+- **Demo scenario `scripts/run_demo.m`:** nominal on swath 1, +1500 kg on the rear hitch from the start of swath 2 (parameter step), optionally $k_f$ = 0.7 later. The verdict should change after turn 1 or 2 and be stable after K = 3 turns.
+- **Done when:** Simulink verdicts match the offline MATLAB verdicts on one run per class (replay mode), and the live demo scenario shows the change.
 
-### H5. Raspberry Pi deployment (manual port to Python)
-- `pi/plant.py` (ported in P10), `pi/features.py` (line-by-line port of the MATLAB feature functions), `pi/model.py` (MLP forward pass with NumPy, about 10 lines), `pi/app.py` (loop: plant with injected change → sensor noise → ring buffer → turn trigger → features → inference → verdict display).
-- **Parity tests** against MATLAB test vectors: features (relative difference below 1e-6), class probabilities and magnitudes (below 1e-5), on at least one run per class.
-- Runs fully offline on the Pi: no network needed at any point.
+### H5. Raspberry Pi port (Python, Track C)
+- Files: `pi/plant.py` (done), `pi/features.py` (line-by-line port of `turnFeatures`), `pi/detector.py` (ring buffer and trigger as a class, same thresholds), `pi/model.py` (forward pass in NumPy, about 10 lines, reads `weights.mat` with `scipy.io.loadmat`), `pi/noise.py` (sensor noise) and `pi/app.py`.
+- `pi/app.py` loop: plant with an injected change → sensor noise → detector → verdict print or live plot. Needs only NumPy and SciPy, no network.
+- Start with dummy weights and a stub feature function, so `app.py` already runs end to end. Port `turnFeatures` when its MATLAB version is stable.
+- **Parity tests** (`pi/test_detector_parity.py`) against the test vectors from MATLAB: features (relative difference below 1e-6), probabilities and regression outputs (below 1e-5), and the verdict sequence, for at least one run per class. Export the vectors with `scripts/export_pi_test_vectors.m` (extend it with the detector).
+- Report the real-time factor of the full loop on the Pi (target well below 1).
+- **Done when:** the parity tests pass on the Pi and `app.py` shows the same verdicts as the Simulink demo for the same scenario.
+
+### H6. Demo and pitch material (everyone)
+- Live: Simulink demo on the PC and `pi/app.py` on the Pi, same scenario, same verdicts.
+- Slides or figures: plant and signals, the detectability plot, the confusion matrix, the $\Delta m$ tracking on a draining tank, the Pi real-time factor.
+
+### Priorities and fallbacks
+- **Must have:** features, a trained classifier, evaluation numbers, one working Pi demo.
+- **Should have:** regressor for $\Delta m$ and $k_f$, Simulink dashboard, parity tests.
+- **Stretch:** drift tracking demo, grey-box `fminsearch` baseline per window, other turn types.
+- If the MLP is not better than a linear model, ship the linear one. If event-based windowing causes trouble, fall back to fixed 30 s windows (the labels are per sample). If the Pi is a problem, run `pi/app.py` on a laptop first and move it later; the parity tests decide when it is right.
 
 ## Relevant files
 
 - [arion_630_parameters.m](arion_630_parameters.m): source of the nominal values. Uses `frontTireRelaxationLengthM` and `vehicleZInertiaKgmm` (recompute it per ballast scenario instead of reusing it). The steering actuator fields are no longer used.
 - New files:
-  - `+change_detector/`: `nominalParams`, `applyScenario`, `makeManeuverProfile`, `makeDisturbance`, `bicycleMatrices`, `addSensorNoise`, and on hackathon day the feature functions.
-  - `models/tractor_plant.slx` (preparation), `models/tractor_change_detection.slx` (hackathon day).
-  - `scripts/`: `check_plant.m`, `check_trajectory.m`, `check_detectability.m`, `generate_dataset.m`, `smoke_feature.m`, and on the day `train_models.m`, `run_demo.m`.
-  - `data/`: `runs/`, `index.mat`, `config.mat`.
-  - `pi/`: `plant.py` (preparation), `features.py`, `model.py`, `app.py`, parity tests (hackathon day).
+  - `+change_detector/`: `nominalParams`, `applyScenario`, `makeManeuverProfile`, `makeDisturbance`, `bicycleMatrices`, `simulatePlant`, `buildRunIndex`, `generateRun`, `addSensorNoise`, and on hackathon day `findTurns`, `turnFeatures`, `turnFeatureNames`, `mlpForward`, `detectorStep`.
+  - `models/tractor_plant.slx` (preparation), `models/tractor_change_detection.slx` (hackathon day), `models/export/weights.mat` (hackathon day).
+  - `scripts/`: `check_plant.m`, `check_trajectory.m`, `check_detectability.m`, `generate_dataset.m`, `check_dataset.m`, `smoke_feature.m`, `export_pi_test_vectors.m`, and on the day `explore_features.m`, `build_features.m`, `train_models.m`, `export_weights.m`, `evaluate_models.m`, `test_detector_stream.m`, `run_demo.m`.
+  - `data/`: `runs/`, `index.mat`, `config.mat`, and on the day `features.mat`, `results/`.
+  - `pi/`: `plant.py` and `test_plant_parity.py` (preparation), `features.py`, `detector.py`, `model.py`, `noise.py`, `app.py`, `test_detector_parity.py` (hackathon day).
 
 ## Verification
 

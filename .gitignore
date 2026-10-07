@@ -1,0 +1,8 @@
+slprj/
+*.slxc
+*.asv
+*.autosave
+data/runs/
+data/*.zip
+data/generate_*.txt
+__pycache__/

@@ -237,7 +237,7 @@ Rules: train only in MATLAB. Simulink and Python never see the dataset files for
 
 1. **Window:** one window per turn, from 5 s before turn entry to 5 s after turn exit, as 4 columns of measured signals `[deltaMeas VxMeas rMeas ayMeas]` at 100 Hz, plus the preceding straight (the last 20 s before the window, speed above 3 m/s). Turn entry: $|\delta|$ (low-passed at 1 Hz) rises above 5°. Turn exit: it falls below 3° (hysteresis). Only measured signals are used, never `segment` or any label.
 2. **Feature function:** `x = change_detector.turnFeatures(win, straight, fs)` returns a row vector, and `change_detector.turnFeatureNames()` its names in a fixed order. Only basic operations (filter with fixed coefficients, sums, max, explicit cross-correlation), so the Python port is line-by-line.
-3. **Weights file** `models/export/weights.mat`: `mu`, `sigma` (feature normalisation), `featureNames`, classifier `W1 b1 W2 b2 W3 b3` and regressor `V1 c1 V2 c2 V3 c3` (ReLU hidden layers, softmax on the classifier), `classNames`. A linear model is the same file with a single layer.
+3. **Weights file** `models/export/weights.mat`: `mu`, `sigma` (feature normalisation), `featureNames`, classifier `W1 b1 W2 b2 W3 b3` and regressor `V1 c1 V2 c2 V3 c3` (ReLU hidden layers, softmax on the classifier), `classNames`. A linear model is the same file with a single layer. As built in H2: matrices act on column vectors ($h_1 = \mathrm{relu}(W_1 z + b_1)$, $z = (x - \mu)/\sigma$), `featureNames` and `classNames` are comma-separated strings, and the regressor outputs `[dm in kg; kf]`. Reference implementation: `change_detector.mlpForward`.
 4. **Streaming detector:** `[out, newVerdict] = change_detector.detectorStep(u, W)` with `u = [delta Vx r ay]` for one sample, internal state in `persistent` variables. When a turn ends it computes features and the model outputs and sets `newVerdict`. `out` holds the last class probabilities (4), the regression outputs ($\Delta m$, $k_f$) and the median over the last K = 3 turns. The offline `findTurns` must use exactly the same trigger thresholds.
 5. **Test vectors** `pi/test_vectors/detector_<class>.mat`: measured inputs of one run, plus expected feature vectors, probabilities, regression outputs and verdicts per turn.
 
@@ -329,6 +329,35 @@ Tracks B and C start with random weights so the plumbing (buffer, trigger, featu
 - Fit on the train split, tune on val. Never touch test until H3.
 - **Export:** `scripts/export_weights.m` writes `models/export/weights.mat` (contract 3) and checks that `mlpForward` reproduces `predict` on 100 validation turns to 1e-5.
 - **Done when:** `weights.mat` exists and the forward-pass check passes.
+- **Status: done.**
+  - Code: `scripts/train_models.m` (about 1 min, writes `models/trained.mat`), `scripts/export_weights.m` (writes `models/export/weights.mat`, 12 kB, and checks the forward pass), `change_detector.mlpForward`.
+  - **Inputs:** the 18 selected features, standardised with the train mean and standard deviation.
+  - **Classifier:** `fitcnet` on a small grid (hidden layers 16-8, 32-16, 64-32; regularisation $\lambda$ = 1e-4 to 1e-2; 3 seeds), scored on val per run. The smallest network within 0.01 of the best wins: **16-8, $\lambda$ = 3e-3**, val **0.80 per turn, 0.88 per run** (mean over seeds 0.878). Regularisation mattered more than size: $\lambda$ = 1e-4 gave 0.82–0.87 per run. Linear logistic reference: 0.68 per turn, 0.76 per run, so the MLP is kept.
+  - **Regressors:** two `fitrnet` networks, both 16-8. $\Delta m$ is trained on turns with A (target in tonnes, $\lambda$ = 1e-2) and $k_f$ on turns with B ($\lambda$ = 1e-3). They are stacked block-diagonally into one exported network with outputs `[dm kg; kf]`.
+  - **Regression results** (val, true class given; "per run" = median of the run's turn estimates, then mean absolute error over runs):
+
+    | Target | MAE per turn | MAE per run | Always guessing the train mean | R² per run |
+    |---|---|---|---|---|
+    | $\Delta m$ (250–2000 kg) | 252 kg | **209 kg** | 460 kg | 0.76 |
+    | $k_f$ (0.6–0.85, 1.15–1.3) | 0.036 | **0.032** | 0.182 | 0.97 |
+
+    $\Delta m$ per run, by true size of the change. Bias over all runs is −10 kg; A only 203 kg, A+B 216 kg:
+
+    | True $\Delta m$ | Runs | MAE | Relative to true |
+    |---|---|---|---|
+    | 250–500 kg | 24 | 282 kg | 73 % |
+    | 500–1000 kg | 33 | 172 kg | 25 % |
+    | 1000–1500 kg | 32 | 123 kg | 10 % |
+    | 1500–2000 kg | 31 | 283 kg | 16 % |
+
+    - Small ballast sits at the detectability limit (250 kg, P6), so relative errors are large there.
+    - At the top end the estimate is pulled towards the middle of the range.
+    - All 35 features instead of 18 don't help (218 kg). The limit is physics and sensor noise, not the model.
+    - Pitch wording: "ballast magnitude ±200 kg; from 1000 kg about ±10–15 %".
+    - Possible improvements, not needed for the demo: a median over more turns, or several noise realisations per run in training.
+  - **On deployment:** gate the regressor with the classifier. Report $\Delta m$ only if the class contains A, $k_f$ only if it contains B.
+  - **Export check:** `mlpForward` reproduces `predict` on 100 val turns to 1e-16. Val accuracy computed through `mlpForward`: 0.797 per turn.
+  - **Test vector for the Pi forward pass:** `pi/test_vectors/model_forward.mat` (written by `export_weights.m`): 100 raw feature rows (18 columns) with the expected class probabilities `P`, `dm` [kg] and `kf`.
 
 ### H3. Evaluation (MATLAB, Track A)
 On the test split, in `scripts/evaluate_models.m`:

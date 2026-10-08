@@ -32,8 +32,8 @@ build_stream = shared_build_stream
 trajectory_options = shared_trajectory_options
 
 def _session(st):
-    # The shared session is also used by Dash; retain this entry point as a
-    # compatibility fallback for existing Streamlit operators.
+    # Retain this entry point as a compatibility fallback for existing
+    # Streamlit operators.
     if "dashboard" not in st.session_state:
         options = shared_trajectory_options()
         st.session_state.dashboard = SharedDashboardSession("Python default", options)

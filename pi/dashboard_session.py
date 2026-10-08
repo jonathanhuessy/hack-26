@@ -1,4 +1,4 @@
-"""Shared operator session for the Dash and Streamlit PC dashboards."""
+"""Shared operator session for the Streamlit PC UI."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def model_for_runtime():
 
 
 class DashboardSession:
-    """Own one operator run and expose bounded data for a browser dashboard."""
+    """Own one operator run and expose bounded data for the PC UI."""
 
     def __init__(self, selection: str, options: dict[str, Path | None]):
         self.options = options
@@ -110,7 +110,7 @@ class DashboardSession:
 
     @property
     def error_message(self) -> str | None:
-        """Return a worker failure in a form the dashboard can display."""
+        """Return a worker failure in a form the UI can display."""
         if not self.runner.errors:
             return None
         error = self.runner.errors[-1]
@@ -237,7 +237,7 @@ class DashboardSession:
         method(name)
 
     def drain(self, limit: int = MAX_UI_BATCH) -> list[tuple[Any, str]]:
-        """Drain a bounded batch so one dashboard callback cannot monopolize the UI."""
+        """Drain a bounded batch so one UI update cannot monopolize the process."""
         if limit <= 0:
             raise ValueError("drain limit must be positive")
         drained = []

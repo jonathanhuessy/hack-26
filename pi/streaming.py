@@ -433,7 +433,7 @@ class StreamingRunner:
                         time.sleep(remaining)
                     else:
                         # At high playback rates the worker is compute-bound. Yield
-                        # explicitly so the Dash server can service poll callbacks.
+                        # explicitly so the PC UI can service update callbacks.
                         time.sleep(0)
         except Exception as exc:  # surfaced to the UI/test owner
             self.errors.append(exc)

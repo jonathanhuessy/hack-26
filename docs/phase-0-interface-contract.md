@@ -141,9 +141,10 @@ contains only:
 - `sample_rate_hz`, `channel_order`, timestamp convention, source, and seed;
 - `timestamp_s`, `sequence`, `delta`, `Vx`, and `r`.
 
-Expected features, probabilities, regressions, and verdict events are reserved
-for Phase 3. Truth signals, `ay`, and labels may be stored under diagnostics
-but are not read by the edge pipeline.
+Phase 3 detector fixtures add expected selected features, probabilities,
+regressions, and verdict events alongside the runtime fields. Truth signals,
+`ay`, and labels may be stored under diagnostics but are not read by the edge
+pipeline.
 
 ## Execution modes
 

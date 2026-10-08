@@ -128,7 +128,7 @@ def load_weights(path: str | Path) -> ModelArtifact:
         raise ValueError("weights artifact has incomplete classifier layers")
     regressor_names = ("V1", "c1", "V2", "c2", "V3", "c3")
     reg_values = tuple(np.asarray(raw[name], dtype=float) for name in regressor_names if name in raw)
-    regressor = reg_values if len(reg_values) == 6 else None
+    regressor = reg_values if len(reg_values) in (2, 4, 6) else None
     names_raw = _field(raw, "featureNames", "")
     if isinstance(names_raw, str):
         feature_names = tuple(name for name in names_raw.split(",") if name)

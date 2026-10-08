@@ -127,6 +127,21 @@ Build a deterministic validation path before adding network transport:
 - Verdict sequences match across implementations.
 - Failures identify whether the issue is windowing, features, model loading, or aggregation.
 
+Phase 3 implementation status:
+
+- `scripts/export_phase3_replay_vectors.m` generates MATLAB reference fixtures
+  for nominal, A, B, and A+B constant runs, plus deterministic step and ramp
+  runs. Each `pi/test_vectors/detector_*.mat` fixture contains the measured
+  edge channels, selected per-turn features, per-turn model outputs, and the
+  MATLAB streaming verdict sequence.
+- Python parity checks use `rtol=1e-6` for selected features and `rtol=1e-5`
+  for model and aggregated verdict values, with `1e-8` absolute tolerance.
+- `python -m unittest discover -s pi -p "test_*.py"` passes the complete
+  package-safe Pi suite. `python pi/test_plant_parity.py` remains the
+  standalone plant parity command.
+- The four class replays and both transition replays match MATLAB for turn
+  timing, class sequence, probabilities, and available regression outputs.
+
 ## Phase 4 — Separated PC plant and Pi edge device
 
 Add a transport adapter without changing the edge pipeline:

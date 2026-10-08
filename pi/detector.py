@@ -77,7 +77,11 @@ class TurnDetector:
         # Keep enough history for the longest feature window and the preceding
         # straight, but do not retain an entire multi-minute run.
         self.history_n = max(
-            self.straight_n + 2 * self.margin_n + round(45.0 * sample_rate_hz),
+            # A preceding straight can begin well before the current turn
+            # while the detector waits for the post-exit margin. Keep enough
+            # history for the longest reference replay, not only the current
+            # turn window.
+            self.straight_n + 2 * self.margin_n + round(90.0 * sample_rate_hz),
             round(60.0 * sample_rate_hz),
         )
         self.reset()

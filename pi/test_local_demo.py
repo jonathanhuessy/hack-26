@@ -2,10 +2,16 @@ import unittest
 
 import numpy as np
 
-from .detector import TurnDetector
-from .local_plant import LocalScenario, NOMINAL_PARAMS, build_source, scenario_parameters
-from .model import dummy_model
-from .pipeline import EdgePipeline
+try:
+    from .detector import TurnDetector
+    from .local_plant import LocalScenario, NOMINAL_PARAMS, build_source, scenario_parameters
+    from .model import dummy_model
+    from .pipeline import EdgePipeline
+except ImportError:
+    from detector import TurnDetector
+    from local_plant import LocalScenario, NOMINAL_PARAMS, build_source, scenario_parameters
+    from model import dummy_model
+    from pipeline import EdgePipeline
 
 
 class LocalScenarioTests(unittest.TestCase):

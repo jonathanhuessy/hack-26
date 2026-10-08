@@ -68,12 +68,24 @@ if s.pendingExit > 0 && k >= s.pendingExit + round(cfg.marginS*fs)
     prediction = change_detector.mlpForward(features, W);
     s.turnIndex = s.turnIndex + 1;
     s.historyP(end+1,:) = prediction.classProbabilities;
+    s.historyDm(end+1,1) = prediction.deltaM_kg;
+    s.historyKf(end+1,1) = prediction.kF;
     if size(s.historyP,1) > 3, s.historyP(1,:) = []; end
+    if numel(s.historyDm) > 3, s.historyDm(1) = []; end
+    if numel(s.historyKf) > 3, s.historyKf(1) = []; end
     s.last.classProbabilities = mean(s.historyP, 1);
     [~, classIndex] = max(s.last.classProbabilities);
     s.last.classIndex = classIndex;
-    s.last.deltaM_kg = prediction.deltaM_kg;
-    s.last.kF = prediction.kF;
+    if any(isfinite(s.historyDm))
+        s.last.deltaM_kg = median(s.historyDm(isfinite(s.historyDm)));
+    else
+        s.last.deltaM_kg = NaN;
+    end
+    if any(isfinite(s.historyKf))
+        s.last.kF = median(s.historyKf(isfinite(s.historyKf)));
+    else
+        s.last.kF = NaN;
+    end
     s.last.turnIndex = s.turnIndex;
     s.last.timestamp_s = (k-1)/fs;
     s.last.state = 'idle';

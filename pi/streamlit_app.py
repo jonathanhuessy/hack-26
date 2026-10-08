@@ -34,6 +34,14 @@ except ImportError:  # pragma: no cover
 build_stream = shared_build_stream
 trajectory_options = shared_trajectory_options
 
+
+def run_status_text(session) -> str:
+    """Return the operator-facing state for the current run."""
+    if not session.running or not session.samples:
+        return "Waiting for run"
+    return "Running"
+
+
 def _session(st):
     # Retain this entry point as a compatibility fallback for existing
     # Streamlit operators.
@@ -191,9 +199,12 @@ def _plotly_figures(session: DashboardSession):
 
 
 def _render_dashboard(st, session: DashboardSession) -> None:
+    if run_status_text(session) == "Waiting for run":
+        st.info("Waiting for run")
+        return
     figures = _plotly_figures(session)
     if not figures:
-        st.info("Press Start to stream the selected trajectory.")
+        st.info("Waiting for run")
         return
     st.markdown("#### Telemetry")
     columns = st.columns(2)

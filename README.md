@@ -463,7 +463,16 @@ On the Pi, start the LCD-enabled listener:
 ```bash
 cd ~/hack-26
 source .venv/bin/activate
-python -m pi.app \
+./scripts/start_pi_listener.sh
+```
+
+The startup wrapper stops only stale Python processes running `pi.app` with
+`--tcp-listen` before launching the listener. This releases GPIOs and port
+`8765` from prior runs without stopping unrelated Python programs. Pass
+listener arguments explicitly to override the defaults:
+
+```bash
+./scripts/start_pi_listener.sh \
   --tcp-listen 0.0.0.0:8765 \
   --realtime \
   --lcd \
@@ -545,12 +554,11 @@ ss -ltnp | grep ':8765'
 ss -tnp | grep ':8765'
 ```
 
-If the port is occupied, identify the stale process and stop it before
-restarting the listener:
+If the port is occupied or a stale listener is holding LCD GPIOs, restart
+through the wrapper:
 
 ```bash
-ps -ef | grep '[p]i.app'
-kill <PID>
+./scripts/start_pi_listener.sh
 ```
 
 ### Optional direct-connect LCD1602 status display
@@ -561,10 +569,7 @@ start the listener with:
 
 ```bash
 python -m pip install -r requirements-pi.txt
-python -m pi.app \
-  --tcp-listen 0.0.0.0:8765 \
-  --realtime \
-  --lcd
+./scripts/start_pi_listener.sh
 ```
 
 The display starts at `NORMAL OPERATION` and latches the latest detector

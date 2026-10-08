@@ -1,19 +1,21 @@
 import unittest
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 try:
     from .streaming import PlaybackStream, PlantStream
     from .dashboard_session import AsyncTcpTransport
     from .contracts import MeasuredSample
     from .transport.tcp import TcpConfig, TcpSampleSource
-    from .streamlit_app import build_stream, trajectory_options
+    from .streamlit_app import build_stream, run_status_text, trajectory_options
 except ImportError:
     from streaming import PlaybackStream, PlantStream
     from dashboard_session import AsyncTcpTransport
     from contracts import MeasuredSample
     from transport.tcp import TcpConfig, TcpSampleSource
-    from streamlit_app import build_stream, trajectory_options
+    from streamlit_app import build_stream, run_status_text, trajectory_options
 
 
 class StreamlitAppTests(unittest.TestCase):
@@ -39,6 +41,29 @@ class StreamlitAppTests(unittest.TestCase):
         self.assertIn("MATLAB demo A", options)
         self.assertIn("MATLAB demo B", options)
         self.assertIn("MATLAB demo AB", options)
+
+    def test_run_status_waits_before_start_and_after_finish(self):
+        self.assertEqual(
+            run_status_text(SimpleNamespace(running=False, samples=[])),
+            "Waiting for run",
+        )
+        self.assertEqual(
+            run_status_text(SimpleNamespace(running=False, samples=[object()])),
+            "Waiting for run",
+        )
+        self.assertEqual(
+            run_status_text(SimpleNamespace(running=True, samples=[object()])),
+            "Running",
+        )
+
+    def test_listener_wrapper_targets_only_tcp_pi_listeners(self):
+        script = (
+            Path(__file__).parents[1] / "scripts" / "start_pi_listener.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"pi.app"', script)
+        self.assertIn('"--tcp-listen"', script)
+        self.assertIn('exec "$PYTHON" -m pi.app "$@"', script)
+        self.assertNotIn("pkill -f", script)
 
 
 class AsyncTcpTransportTests(unittest.TestCase):

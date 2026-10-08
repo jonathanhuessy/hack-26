@@ -266,6 +266,59 @@ Tracks B and C start with random weights so the plumbing (buffer, trigger, featu
   - Steady-state yaw gain in the turn compared with $V_x\delta/L$, and $a_y/(V_x r)$.
   - Turn speed and straight speed (so the classifier can normalise for them).
 - **Done when:** `data/features.mat` exists, has no NaN, and a quick `fitcdiscr` on train/val gives accuracy clearly above chance on the 4 classes.
+- **Status: done.**
+  - Code: `change_detector.turnTriggerConfig` (all trigger and window thresholds in one place, for Simulink and the Pi too), `findTurns`, `turnWindow`, `turnFeatures` (35 features), `turnFeatureNames`, `scripts/build_features.m` (about 2 min), `scripts/explore_features.m`.
+  - **Trigger:** exit needs $|\delta|$ below 3° for 2 s, so the full-lock reversals of an omega turn stay inside one turn. Turns with a heading change below 120° are dropped (operator corrections).
+  - **Detection:** 1417 of 1420 runs (99.8 %) give exactly the 3 labelled turns. The 3 misses are the last turn of a run that ends less than 2 s after the turn. 4257 turn rows, no NaN.
+  - **Features:** $e = r - V_x\tan\delta/L$ and $q = a_y - V_x r$. Band powers of $e$ and $q$ (0.2–3 Hz), spectral peak and half-power damping, AR(2) frequency and damping, $\delta \to r$ gain and phase in 3 bands, steady-state gain, and on the preceding straight $\delta \to r$ / $\delta \to a_y$ gain and phase plus the $e$ peak.
+  - **Best single features** (AUC against nominal, train turns):
+    - A: `bpE_1.5-2.0` 0.89 (0.96 for $\Delta m \ge 1000$ kg), `bpE_2.0-3.0` 0.88, `zetaAR` 0.86, `phaseS_r` 0.79.
+    - B: `bpE_0.6-1.0` 0.80, `bpE_1.5-2.0` 0.79, `fAR` 0.79, `fpkE` 0.77.
+    - Useless: `ayRatio`, `fpkQ`, `heightQ`. `oppSteer` has no class information on its own, but tells the model the turn type (0.26 for omega turns, 0 for U-turns).
+  - **Baselines** (val, 4 classes, chance 0.25), per turn / per run (posterior averaged over the 3 turns):
+
+    | Model | Per turn | Per run |
+    |---|---|---|
+    | LDA | 0.67 | 0.75 |
+    | Linear logistic (ECOC) | 0.69 | 0.80 |
+    | MLP 32-16 (`fitcnet`) | 0.76 | 0.86 |
+    | Bagged trees | 0.76 | 0.81 |
+
+    Linear regression per turn: $\Delta m$ MAE 267 kg, $k_f$ MAE 0.048.
+  - **Decision: keep 18 features** (`scripts/select_features.m`). Basis: permutation importance of the 32-16 MLP on val, then subsets compared on val:
+
+    | Feature set | Count | Val per turn | Val per run |
+    |---|---|---|---|
+    | All | 35 | 0.76 | 0.86 |
+    | Top 15 by importance | 15 | 0.73 | 0.84 |
+    | Top 8 by importance | 8 | 0.73 | 0.82 |
+    | No $a_y$ features | 25 | 0.74 | 0.84 |
+    | **No $a_y$ + weakest dropped (chosen)** | **18** | **0.75** | **0.85** |
+
+    Differences of about ±0.02 are within the spread between training seeds. The chosen set needs only 3 sensors ($\delta$, $V_x$, $r$): no accelerometer, so it is insensitive to the 3–7 Hz vibration seen in the real log, and the Pi port is smaller. `turnFeatures` still computes all 35; training and the Pi use the 18 by name.
+
+    | Feature | Window | Meaning |
+    |---|---|---|
+    | `Vturn` | turn | Mean speed in the turn. Context: the wobble depends on speed. |
+    | `oppSteer` | turn | Fraction of the turn spent steering against the turn direction. Context: tells omega (≈ 0.26) from U-turn (0). |
+    | `bpE_0.2-0.6` | turn | Log power of $e$ in 0.2–0.6 Hz: slow deviations from the kinematic yaw rate. |
+    | `bpE_0.6-1.0` | turn | Log power of $e$ in 0.6–1.0 Hz. Rises with softer front tires (B), whose resonance moves down. |
+    | `bpE_1.0-1.5` | turn | Log power of $e$ around the nominal resonance (about 1.3–1.5 Hz). |
+    | `bpE_1.5-2.0` | turn | Log power of $e$ just above the resonance. Most important feature: drops with rear ballast (A) and with B. |
+    | `bpE_2.0-3.0` | turn | Log power of $e$ in 2–3 Hz. Drops with rear ballast (more mass and inertia damp fast motion). |
+    | `fpkE` | turn | Frequency of the highest peak in the spectrum of $e$ (0.5–3 Hz): the wobble frequency. |
+    | `fAR` | turn | Natural frequency of a 2nd-order oscillator (AR(2)) fitted to $e$. A more robust wobble frequency; lower for softer front tires, higher for stiffer ones (B). |
+    | `zetaAR` | turn | Damping ratio of the same AR(2) fit. Changes with rear ballast (A). |
+    | `gainR_0.1-0.4` | turn | How strongly $r$ follows $\delta$ in 0.1–0.4 Hz, relative to the kinematic gain $V_x/L$. |
+    | `phaseR_0.1-0.4` | turn | Phase (delay) of $r$ behind $\delta$ in 0.1–0.4 Hz. |
+    | `phaseR_0.4-0.8` | turn | Phase of $r$ behind $\delta$ in 0.4–0.8 Hz. |
+    | `ssGain` | turn | Median of $r / (V_x\tan\delta/L)$ while steering above 8°: steady-state yaw rate relative to geometry (understeer). |
+    | `gainS_r` | straight | Gain of $\delta \to r$ in 0.1–0.5 Hz on the preceding 15 km/h straight, relative to $V_x/L$. Understeer is about 9× larger here than at 5 km/h; best single feature for telling A from B. |
+    | `phaseS_r` | straight | Phase of $\delta \to r$ in 0.1–0.5 Hz on the straight. |
+    | `bpS_1.0-2.0` | straight | Log power of $e$ in 1–2 Hz on the straight: the wobble at 15 km/h. |
+    | `fpkS` | straight | Wobble frequency (spectral peak of $e$) on the straight. |
+
+    Here $e = r - V_x\tan\delta/L$ is the yaw rate that the steering geometry doesn't explain. Turn window = 5 s before entry to 5 s after exit; straight = last 20 s before the window with $V_x$ > 3 m/s.
 
 ### H2. Training (MATLAB, Track A)
 - **Explore:** feature ranking (`fscmrmr`), quick baselines (`fitcdiscr`, `fitclinear`, `fitcensemble`, `fitcnet`) to see what accuracy is achievable. Tree ensembles are for exploration only, they will not be deployed.

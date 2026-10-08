@@ -41,6 +41,23 @@ This runs the local/replay contract tests with the checked-in fixture at
 by `scripts/export_pi_test_vectors.m`; plant numerical parity remains covered
 separately by `pi/test_plant_parity.py`.
 
+## Phase 1 deployable pipeline
+
+The Phase 1 Python path uses the H1-selected 18 features and the same
+three-input contract:
+
+```bash
+python -m unittest pi.test_feature_parity pi.test_model_parity pi.test_detector_parity
+python -m pi.app pi/test_vectors/features_nominal.mat
+```
+
+`pi/features.py` ports the selected feature calculations, `pi/model.py` loads
+the exported MATLAB artifact (or deterministic dummy weights), and
+`pi/detector.py` performs turn triggering, windowing, inference, and K=3
+aggregation behind the Phase 0 pipeline. The `.mat` feature fixtures under
+`pi/test_vectors/` are MATLAB reference vectors for parity; their fourth
+`ay` column is diagnostic-only and is not forwarded to the detector.
+
 ## Quickstart (MATLAB)
 
 Open MATLAB in the repo root and run:

@@ -1,0 +1,35 @@
+{
+  "feature_version": 1,
+  "feature_names": [
+    "Vturn",
+    "oppSteer",
+    "bpE_0.2-0.6",
+    "bpE_0.6-1.0",
+    "bpE_1.0-1.5",
+    "bpE_1.5-2.0",
+    "bpE_2.0-3.0",
+    "fpkE",
+    "fAR",
+    "zetaAR",
+    "gainR_0.1-0.4",
+    "phaseR_0.1-0.4",
+    "phaseR_0.4-0.8",
+    "ssGain",
+    "gainS_r",
+    "phaseS_r",
+    "bpS_1.0-2.0",
+    "fpkS"
+  ],
+  "input_channels": ["delta", "Vx", "r"],
+  "sample_rate_hz": 100,
+  "wheelbase_m": 2.81,
+  "turn_window": {
+    "margin_s": 5,
+    "straight_s": 20,
+    "straight_min_vx_mps": 3
+  },
+  "normalization": {
+    "source": "models/export/weights.mat",
+    "fields": ["mu", "sigma"]
+  }
+}

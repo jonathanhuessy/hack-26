@@ -8,6 +8,8 @@ from pathlib import Path
 import time
 from typing import Any, Iterator, Mapping, Sequence
 
+import numpy as np
+
 try:
     from .contracts import MeasuredSample, SAMPLE_PERIOD_S, SCHEMA_VERSION
 except ImportError:  # Allows `python pi/...py` from the repository root.
@@ -92,5 +94,36 @@ class ReplaySampleSource:
                 timestamp_s=float(item["timestamp_s"]),
                 sequence=int(item["sequence"]),
                 schema_version=int(item.get("schema_version", SCHEMA_VERSION)),
+                diagnostics=diagnostics,
+            )
+
+
+@dataclass
+class MatlabFeatureReplaySource:
+    """Read an H1 ``features_<class>.mat`` vector as a three-input source."""
+
+    path: str | Path
+    realtime: bool = False
+
+    def __iter__(self) -> Iterator[MeasuredSample]:
+        from scipy.io import loadmat
+
+        data = loadmat(self.path, squeeze_me=True)
+        measured = np.asarray(data["meas"], dtype=float)
+        if measured.ndim != 2 or measured.shape[1] < 3:
+            raise ValueError("MATLAB replay must contain meas columns [delta Vx r ...]")
+        period = 1.0 / float(np.asarray(data["fs"]).reshape(-1)[0])
+        for sequence, row in enumerate(measured):
+            if self.realtime and sequence:
+                time.sleep(period)
+            diagnostics = {}
+            if measured.shape[1] >= 4:
+                diagnostics["ay"] = float(row[3])
+            yield MeasuredSample(
+                delta=float(row[0]),
+                vx=float(row[1]),
+                yaw_rate=float(row[2]),
+                timestamp_s=sequence * period,
+                sequence=sequence,
                 diagnostics=diagnostics,
             )

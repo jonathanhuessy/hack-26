@@ -98,5 +98,12 @@ class EdgePipeline:
 
     def run(self, source: Any) -> list[PipelineEvent]:
         events = [self.push(sample) for sample in source]
-        self.flush()
+        flushed = self.flush()
+        if flushed is not None:
+            events.append(
+                PipelineEvent(
+                    SampleResult(SampleStatus.ACCEPTED, None, "end of stream"),
+                    flushed,
+                )
+            )
         return events

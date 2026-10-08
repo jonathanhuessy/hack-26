@@ -11,6 +11,7 @@ try:
     from .contracts import ExecutionConfig
     from .detector import TurnDetector
     from .local_plant import LocalScenario, build_source
+    from .lcd_status import LCDPinout, create_lcd
     from .model import dummy_model, load_weights
     from .noise import NoisySource
     from .pipeline import EdgePipeline
@@ -21,6 +22,7 @@ except ImportError:
     from contracts import ExecutionConfig
     from detector import TurnDetector
     from local_plant import LocalScenario, build_source
+    from lcd_status import LCDPinout, create_lcd
     from model import dummy_model, load_weights
     from noise import NoisySource
     from pipeline import EdgePipeline
@@ -47,6 +49,8 @@ def run(
     transport_file: str | Path | None = None,
     status_interval_s: float = 0.5,
     tcp_reconnect: bool = True,
+    lcd: bool = False,
+    lcd_pinout: LCDPinout = LCDPinout(),
 ) -> int:
     default_weights = Path(__file__).resolve().parents[1] / "models" / "export" / "weights.mat"
     weight_path = Path(weights) if weights else (default_weights if default_weights.exists() else None)
@@ -77,6 +81,11 @@ def run(
         source = NoisySource(source, seed=noise_seed)
     detector = TurnDetector(model)
     pipeline = EdgePipeline(detector, ExecutionConfig(realtime=realtime))
+    display = create_lcd(
+        enabled=lcd,
+        pinout=lcd_pinout,
+    )
+    display.show_class("nominal")
     events = []
     printed_verdict_ids: set[str] = set()
     started_at = time.monotonic()
@@ -88,6 +97,7 @@ def run(
         verdict = getattr(consumer_result, "new_verdict", None)
         if verdict is not None and verdict.window_id not in printed_verdict_ids:
             _print_verdict(verdict)
+            display.show_class(verdict.class_name)
             printed_verdict_ids.add(verdict.window_id)
         now = time.monotonic()
         if status_interval_s > 0 and now - last_status_at >= status_interval_s:
@@ -108,6 +118,7 @@ def run(
     for verdict in verdicts:
         if verdict.window_id not in printed_verdict_ids:
             _print_verdict(verdict)
+            display.show_class(verdict.class_name)
             printed_verdict_ids.add(verdict.window_id)
     print(
         f"source={source_name} mode={_source_mode(source_name)} "
@@ -118,6 +129,7 @@ def run(
     statuses = getattr(source, "statuses", ())
     for status in statuses:
         print(f"transport_status={status.kind} message={status.message}")
+    display.close()
     return 0
 
 
@@ -173,6 +185,45 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="replay a framed JSON transport capture",
     )
+    parser.add_argument(
+        "--lcd",
+        action="store_true",
+        help="show detector status on a direct-GPIO LCD1602",
+    )
+    parser.add_argument(
+        "--lcd-rs-pin",
+        type=int,
+        default=15,
+        help="LCD RS BCM GPIO pin",
+    )
+    parser.add_argument(
+        "--lcd-rw-pin",
+        type=int,
+        default=18,
+        help="LCD RW BCM GPIO pin",
+    )
+    parser.add_argument(
+        "--lcd-enable-pin",
+        type=int,
+        default=23,
+        help="LCD enable BCM GPIO pin",
+    )
+    for name, default in (
+        ("d0", 2),
+        ("d1", 3),
+        ("d2", 4),
+        ("d3", 17),
+        ("d4", 27),
+        ("d5", 22),
+        ("d6", 10),
+        ("d7", 9),
+    ):
+        parser.add_argument(
+            f"--lcd-{name}-pin",
+            type=int,
+            default=default,
+            help=f"LCD {name.upper()} BCM GPIO pin",
+        )
     args = parser.parse_args(argv)
     tcp_listen = None
     if args.tcp_listen:
@@ -198,6 +249,20 @@ def main(argv: list[str] | None = None) -> int:
         transport_file=args.transport_file,
         status_interval_s=args.status_interval,
         tcp_reconnect=not args.tcp_no_reconnect,
+        lcd=args.lcd,
+        lcd_pinout=LCDPinout(
+            rs=args.lcd_rs_pin,
+            rw=args.lcd_rw_pin,
+            enable=args.lcd_enable_pin,
+            d0=args.lcd_d0_pin,
+            d1=args.lcd_d1_pin,
+            d2=args.lcd_d2_pin,
+            d3=args.lcd_d3_pin,
+            d4=args.lcd_d4_pin,
+            d5=args.lcd_d5_pin,
+            d6=args.lcd_d6_pin,
+            d7=args.lcd_d7_pin,
+        ),
     )
 
 

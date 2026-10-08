@@ -438,7 +438,7 @@ corresponding command log is written to `data/interactive.events.json`. Use
    cd ~/hack-26
    python3 -m venv .venv
    source .venv/bin/activate
-   python -m pip install numpy scipy
+   python -m pip install -r requirements-pi.txt
    ```
 
 3. Copy or update `models/export/weights.mat` and the repository runtime on
@@ -491,6 +491,76 @@ restarting the listener:
 ps -ef | grep '[p]i.app'
 kill <PID>
 ```
+
+### Optional direct-connect LCD1602 status display
+
+The Pi can show the latest detector verdict on a bare LCD1602 connected
+directly to the 40-pin header in 8-bit mode. Install the Pi requirements and
+start the listener with:
+
+```bash
+python -m pip install -r requirements-pi.txt
+python -m pi.app \
+  --tcp-listen 0.0.0.0:8765 \
+  --realtime \
+  --lcd
+```
+
+The display starts at `NORMAL OPERATION` and latches the latest detector
+verdict until another verdict arrives. `A` displays `IMPLEMENT` / `ATTACHED`,
+`B` displays `FLAT TIRE`, and `AB` displays `IMPLEMENT` / `FLAT TIRE`.
+
+Default direct-connect pinout. GPIO values below are BCM numbers; physical
+header pins are the numbers printed on the Raspberry Pi pinout:
+
+| LCD1602 pin | LCD signal | Raspberry Pi physical pin | BCM GPIO |
+|---:|---|---:|---:|
+| 1 | `VSS` / GND | 6 | — |
+| 2 | `VDD` / +5V | 2 or 4 | — |
+| 3 | `VO` contrast | 1 | — |
+| 4 | `RS` | 10 | GPIO15 |
+| 5 | `RW` | 12 | GPIO18 |
+| 6 | `E` | 16 | GPIO23 |
+| 7 | `D0` | 3 | GPIO2 |
+| 8 | `D1` | 5 | GPIO3 |
+| 9 | `D2` | 7 | GPIO4 |
+| 10 | `D3` | 11 | GPIO17 |
+| 11 | `D4` | 13 | GPIO27 |
+| 12 | `D5` | 15 | GPIO22 |
+| 13 | `D6` | 19 | GPIO10 |
+| 14 | `D7` | 21 | GPIO9 |
+| 15 | `A` / LED+ | 4 | — |
+| 16 | `K` / LED− | 25 | — |
+
+Connect `VO` to the configured physical pin 1 (`3.3V`). Use a 220 Ω series
+resistor for the backlight anode unless the LCD module already has a
+current-limiting resistor. `RW` is driven low by the Pi; the Pi only writes to
+the LCD.
+
+```text
+                              +5V
+                               │
+Pi pin 2/4 ─────────────── LCD VDD (2)
+Pi pin 6  ── GND ─────── LCD VSS (1)
+Pi pin 1  ── 3.3V ────── LCD VO (3)
+
+Pi pin 10 / GPIO15 ───── LCD RS (4)
+Pi pin 12 / GPIO18 ───── LCD RW (5)
+Pi pin 16 / GPIO23 ───── LCD E  (6)
+Pi pin 3  / GPIO2  ───── LCD D0 (7)
+Pi pin 5  / GPIO3  ───── LCD D1 (8)
+Pi pin 7  / GPIO4  ───── LCD D2 (9)
+Pi pin 11 / GPIO17 ───── LCD D3 (10)
+Pi pin 13 / GPIO27 ───── LCD D4 (11)
+Pi pin 15 / GPIO22 ───── LCD D5 (12)
+Pi pin 19 / GPIO10 ───── LCD D6 (13)
+Pi pin 21 / GPIO9  ───── LCD D7 (14)
+Pi pin 4  / 5V ───────── LCD A/LED+ (15)
+Pi pin 25 / GND ──────── LCD K/LED− (16)
+```
+
+The pin mapping can be changed with `--lcd-rs-pin`, `--lcd-rw-pin`,
+`--lcd-enable-pin`, and `--lcd-d0-pin` through `--lcd-d7-pin`.
 
 ### Streamlit PC UI
 

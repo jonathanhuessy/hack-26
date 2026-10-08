@@ -28,6 +28,19 @@ except ImportError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parents[1]
 CLASS_NAMES = ("nominal", "A", "B", "AB")
+CLASS_LABELS = {
+    "nominal": "No Change",
+    "A": "Implement Attached",
+    "B": "Flat Tire",
+    "AB": "Implement + Flat Tire",
+}
+PERTURBATION_NAMES = {
+    "A": "Implement attached",
+    "B": "Flat tire",
+    "AB": "Implement attached and flat tire",
+    "IMPLEMENT_ATTACHED": "Implement attached",
+    "TIRE_FLAT": "Tire fault",
+}
 MAX_DISPLAY_SAMPLES = 5000
 MAX_PLOT_POINTS = 600
 MAX_UI_BATCH = 128
@@ -41,12 +54,16 @@ PATH_COLORS = {
 
 def trajectory_options() -> dict[str, Path | None]:
     options: dict[str, Path | None] = {"Python default": None}
-    folder = ROOT / "data" / "generated_trajectories" / "matlab"
-    for path in sorted(folder.glob("*.mat")):
-        demo_name = path.stem.lower()
-        if demo_name in {"demo_a", "demo_b", "demo_ab"}:
-            label = f"MATLAB demo {demo_name.removeprefix('demo_').upper()}"
-            options[label] = path
+    folders = (
+        ROOT / "data" / "generated_trajectories" / "matlab",
+        ROOT / "data" / "generated_trajectories",
+    )
+    for folder in folders:
+        for path in sorted(folder.glob("*.mat")):
+            demo_name = path.stem.lower()
+            if demo_name in {"demo_a", "demo_b", "demo_ab"}:
+                label = f"MATLAB demo {demo_name.removeprefix('demo_').upper()}"
+                options.setdefault(label, path)
     return options
 
 
@@ -225,6 +242,70 @@ class DashboardSession:
     def set_speed(self, speed: float) -> None:
         self.speed = float(speed)
         self.runner.set_speed(self.speed)
+
+    def perturbation_status(self) -> dict[str, object]:
+        """Return read-only perturbation truth from the selected playback."""
+        metadata = getattr(self.stream, "metadata", {})
+        class_name = str(metadata.get("className", "nominal")).upper()
+        change_time = metadata.get("changeTimeS")
+
+        if class_name in PERTURBATION_NAMES and change_time is not None:
+            change_time_s = float(change_time)
+            active = self.stream.time_s >= change_time_s
+            details = []
+            added_mass = metadata.get("addedMassKg")
+            kf = metadata.get("kf")
+            if class_name in ("A", "AB") and added_mass is not None:
+                details.append(f"+{float(added_mass):.0f} kg implement mass")
+            if class_name in ("B", "AB") and kf is not None:
+                details.append(f"front tire stiffness ×{float(kf):.2f}")
+            return {
+                "state": "PERTURBED" if active else "NOMINAL",
+                "name": PERTURBATION_NAMES[class_name],
+                "time_s": change_time_s,
+                "details": ", ".join(details),
+            }
+
+        active_events = set()
+        if self.samples:
+            active_events = set(
+                filter(
+                    None,
+                    self.samples[-1].diagnostics.get("active_events", "").split(","),
+                )
+            )
+        names = [PERTURBATION_NAMES.get(name, name) for name in active_events]
+        return {
+            "state": "PERTURBED" if names else "NOMINAL",
+            "name": ", ".join(names) if names else "None",
+            "time_s": None,
+            "details": "Runtime event status" if names else "No playback perturbation metadata",
+        }
+
+    def configuration_status(self) -> dict[str, bool]:
+        """Return the current implement and tire states for the selected playback."""
+        metadata = getattr(self.stream, "metadata", {})
+        class_name = str(metadata.get("className", "nominal")).upper()
+        change_time = metadata.get("changeTimeS")
+        if class_name in {"A", "B", "AB"} and change_time is not None:
+            active = self.stream.time_s >= float(change_time)
+            return {
+                "implement": active and class_name in {"A", "AB"},
+                "tire": active and class_name in {"B", "AB"},
+            }
+
+        active_events = set()
+        if self.samples:
+            active_events = set(
+                filter(
+                    None,
+                    self.samples[-1].diagnostics.get("active_events", "").split(","),
+                )
+            )
+        return {
+            "implement": bool(active_events & {"implement_attached", "A", "AB"}),
+            "tire": bool(active_events & {"tire_flat", "B", "AB"}),
+        }
 
     def event(self, action: str, name: str) -> None:
         if not self.supports_events:

@@ -239,7 +239,7 @@ Rules: train only in MATLAB. Simulink and Python never see the dataset files for
 2. **Feature function:** `x = change_detector.turnFeatures(win, straight, fs)` returns a row vector, and `change_detector.turnFeatureNames()` its names in a fixed order. Only basic operations (filter with fixed coefficients, sums, max, explicit cross-correlation), so the Python port is line-by-line.
 3. **Weights file** `models/export/weights.mat`: `mu`, `sigma` (feature normalisation), `featureNames`, classifier `W1 b1 W2 b2 W3 b3` and regressor `V1 c1 V2 c2 V3 c3` (ReLU hidden layers, softmax on the classifier), `classNames`. A linear model is the same file with a single layer. As built in H2: matrices act on column vectors ($h_1 = \mathrm{relu}(W_1 z + b_1)$, $z = (x - \mu)/\sigma$), `featureNames` and `classNames` are comma-separated strings, and the regressor outputs `[dm in kg; kf]`. Reference implementation: `change_detector.mlpForward`.
 4. **Streaming detector:** `[out, newVerdict] = change_detector.detectorStep(u, W)` with `u = [delta Vx r ay]` for one sample, internal state in `persistent` variables. When a turn ends it computes features and the model outputs and sets `newVerdict`. `out` holds the last class probabilities (4), the regression outputs ($\Delta m$, $k_f$) and the median over the last K = 3 turns. The offline `findTurns` must use exactly the same trigger thresholds. Verdict rule as built in H3: `change_detector.aggregateVerdict` (class = argmax of the mean probabilities of the last K turns, magnitudes = median, gated by the class). As built in H4: a System object instead of a function with persistent variables (clean reset, usable in MATLAB loops and in a MATLAB System block): `det = change_detector.StreamingDetector('W', W)`, `[cls, p, dm, kf, clsTurn, newVerdict] = det(u)`. The verdict is due `marginS` (5 s) after turn exit, at the end of the window, and is held until the next one; `clsTurn` = class of the latest turn alone (-1 before the first turn); ring buffer 150 s. The Pi port (`pi/detector.py`) should mirror this class.
-5. **Test vectors** `pi/test_vectors/detector_<class>.mat`: measured inputs of one run, plus expected feature vectors, probabilities, regression outputs and verdicts per turn. As built in H3: `detector_A.mat`, `detector_B.mat`, `detector_AB.mat` from `scripts/run_demo_replay.m`. Fields:
+5. **Test vectors** `pi/test_vectors/detector_<class>.mat`: measured inputs of one run, plus expected feature vectors, probabilities, regression outputs and verdicts per turn. As built in H3: `detector_A.mat`, `detector_B.mat`, `detector_AB.mat` from `scripts/run_demo_replay.m`. After the Pi branch was merged, `pi/test_vectors/detector_<case>.mat` is written by `scripts/export_phase3_replay_vectors.m` (validation runs per class plus step and ramp, the Pi team's format). The demo-scenario references from `run_demo_replay.m` moved to `pi/scenarios/demo_reference_<A|B|AB>.mat` with the fields below. Fields:
    - `meas` (N × 4 `[delta Vx r ay]`), `fs`;
    - per turn: `iEntry`, `iExit`, `iVerdict` (sample at which the window ends and the verdict is due, 1-based), `X` (35 features), `selectedIdx`, `P`, `dmTurn`, `kfTurn`, `clsTurn`, `clsVerdict`, `pVerdict`, `dmVerdict`, `kfVerdict`, and the truth `clsTrue`, `dmTrue`, `kfTrue`.
 
@@ -402,7 +402,7 @@ On the test split, in `scripts/evaluate_models.m`:
   - **Demo scenario and offline replay (done, prepared for H4/H5):**
     - `change_detector.demoScenario(name)` defines the fixed demo: 6 swaths (fixed seed), nominal for turns 1–2, then a step change after turn 2. Variants: `'A'` +1500 kg on the rear hitch, `'B'` $k_f$ = 0.7, `'AB'` both.
     - `scripts/run_demo_replay.m` runs each variant offline through the full detector: simulate, sensor noise (seed 777), `findTurns`, `turnFeatures`, `mlpForward`, `aggregateVerdict` with K = 3.
-    - It writes the pitch figures `data/results/demo_<name>.png` (path with turn numbers; class, $\Delta m$ and $k_f$ per turn, with truth in black and the estimates in colour) and the detector references `pi/test_vectors/detector_<name>.mat` (contract 5).
+    - It writes the pitch figures `data/results/demo_<name>.png` (path with turn numbers; class, $\Delta m$ and $k_f$ per turn, with truth in black and the estimates in colour) and the detector references `pi/scenarios/demo_reference_<name>.mat` (contract 5; originally `pi/test_vectors/detector_<name>.mat`).
     - Result, identical pattern in all three variants:
       - Turns 1–2 are nominal and correct.
       - Turn 3 is the first turn after the change. The single-turn class is already right, while the verdict still says nominal (2 of 3 turns are old).
@@ -435,7 +435,7 @@ On the test split, in `scripts/evaluate_models.m`:
     - Zero-order hold at 0.01 s, then the MATLAB System block `ChangeDetector` (Interpreted execution, weights `detW`).
     - Dashboard: displays for the verdict class, $\Delta m$, $k_f$ and the latest single-turn class; a verdict scope; the XY path; a scope of measured vs kinematic yaw rate.
     - To Workspace logs `detCls detP detDm detKf detClsTurn detNew`.
-  - **Demo script `scripts/run_demo.m`:** `run_demo(name, mode)`, with `name` A/B/AB from `demoScenario` (6 swaths, change after turn 2) and `mode` `'live'` or `'replay'`. It sets all variables through `Simulink.SimulationInput`, runs about 400 s of simulated time in about 2 s, prints the verdict per turn and compares with `pi/test_vectors/detector_<name>.mat`.
+  - **Demo script `scripts/run_demo.m`:** `run_demo(name, mode)`, with `name` A/B/AB from `demoScenario` (6 swaths, change after turn 2) and `mode` `'live'` or `'replay'`. It sets all variables through `Simulink.SimulationInput`, runs about 400 s of simulated time in about 2 s, prints the verdict per turn and compares with `pi/scenarios/demo_reference_<name>.mat`.
   - **Result:** PASS for all three scenarios in both modes.
     - Replay: identical, differences below 5e-16.
     - Live: differences of about 4e-7, because the reference stores the measured signals in single precision.
@@ -451,7 +451,7 @@ On the test split, in `scripts/evaluate_models.m`:
 - Reference data in `pi/test_vectors/` (MATLAB v7, read with `scipy.io.loadmat(path, squeeze_me=True)`):
   - `features_<nominal|A|B|AB>.mat`: one validation run per class with the measured signals `meas` (N × 4 `[delta Vx r ay]`), `fs`, the trigger results `iEntry`, `iExit`, `headingRad`, the window rows `i0`, `i1`, the straight rows `s0`, `s1`, the expected 35 features per turn `X`, `featureNames`, `selectedIdx`, `trigger` (all thresholds), and every filter coefficient: `bLp`, `aLp`, `bands`, `bBand`, `aBand`, `bAR`, `aAR`.
   - `model_forward.mat`: 100 rows of the 18 selected features `X`, expected `P` (4 class probabilities), `dm` [kg], `kf`.
-  - `detector_<A|B|AB>.mat`: a whole demo run. Measured signals `meas`, `fs`, `K`, and per turn: `iEntry`, `iExit`, `iVerdict` (sample at which the verdict is due), `X`, `P`, `dmTurn`, `kfTurn`, `clsTurn`, `clsVerdict`, `pVerdict`, `dmVerdict`, `kfVerdict`, and the truth `clsTrue`, `dmTrue`, `kfTrue`.
+  - `pi/scenarios/demo_reference_<A|B|AB>.mat` (from `run_demo_replay.m`; `pi/test_vectors/detector_<case>.mat` now has the Pi team's format from `export_phase3_replay_vectors.m`): a whole demo run. Measured signals `meas`, `fs`, `K`, and per turn: `iEntry`, `iExit`, `iVerdict` (sample at which the verdict is due), `X`, `P`, `dmTurn`, `kfTurn`, `clsTurn`, `clsVerdict`, `pVerdict`, `dmVerdict`, `kfVerdict`, and the truth `clsTrue`, `dmTrue`, `kfTrue`.
 - **All indices in the `.mat` files are 1-based (MATLAB).** Subtract 1 in Python.
 
 **Steps** (each one has a test; go in this order):
@@ -508,7 +508,7 @@ On the test split, in `scripts/evaluate_models.m`:
      - when `k == iExit + nM` (500 samples later), cut the window and the straight from the buffer as in `turn_window`;
      - compute the 35 features, take the 18 at `selectedIdx`, run `forward`, append to the turn history, and update the verdict with `aggregate` over the last K turns;
      - return `new_verdict = True` on that sample only. Outputs hold their value in between; `cls_turn = -1` before the first turn.
-   - **Test:** feed `detector_<A|B|AB>.mat` row by row. Required:
+   - **Test:** feed `pi/scenarios/demo_reference_<A|B|AB>.mat` row by row. Required:
      - `new_verdict` at exactly `iVerdict - 1` (0-based);
      - `clsVerdict` and `clsTurn` identical;
      - `pVerdict`, `dmVerdict`/1000 and `kfVerdict` within 1e-9.
@@ -517,8 +517,8 @@ On the test split, in `scripts/evaluate_models.m`:
    - steering: 0.2° white plus a 0.1° bias;
    - speed: 0.02 m/s;
    - accelerometer: 0.2 m/s² white, a 0.05 m/s² bias, and 0.15 m/s² band-pass vibration at 8–30 Hz (not used by the 18 features).
-5. **Scenario inputs for the Pi**, done by Track A in MATLAB: `scripts/export_pi_scenarios.m` writes `pi/scenarios/scenario_<A|B|AB>.mat` with `t`, `delta`, `Vx`, `Fyd`, `Mzd`, `p0`, `p1` (7 plant parameters before and after the change), `tStart`, `tEnd`, `imuX`, the true change for display, and `noise` (N × 4 additive sensor noise from MATLAB, seed 777, the same as in `detector_*.mat`). This avoids porting the maneuver generator: the Pi simulates the plant itself from these inputs.
-   - **Done:** files are about 1.7 MB each. Check: `plant.simulate` on a scenario plus `noise` reproduces `meas` of `detector_<name>.mat` to 2.4e-7 at most, i.e. the single-precision rounding of the reference.
+5. **Scenario inputs for the Pi**, done by Track A in MATLAB: `scripts/export_pi_scenarios.m` writes `pi/scenarios/scenario_<A|B|AB>.mat` with `t`, `delta`, `Vx`, `Fyd`, `Mzd`, `p0`, `p1` (7 plant parameters before and after the change), `tStart`, `tEnd`, `imuX`, the true change for display, and `noise` (N × 4 additive sensor noise from MATLAB, seed 777, the same as in `demo_reference_*.mat`). This avoids porting the maneuver generator: the Pi simulates the plant itself from these inputs.
+   - **Done:** files are about 1.7 MB each. Check: `plant.simulate` on a scenario plus `noise` reproduces `meas` of `pi/scenarios/demo_reference_<name>.mat` to 2.4e-7 at most, i.e. the single-precision rounding of the reference.
 6. **`pi/app.py`**, the demo: `python3 app.py A`.
    1. Load `scenario_A.mat` and `weights.mat`.
    2. Run `plant.simulate`.

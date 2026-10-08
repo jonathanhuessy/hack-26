@@ -1,11 +1,11 @@
 function R = run_demo(name, mode)
 %RUN_DEMO Run the Simulink demo models/tractor_change_detection.slx on a demo scenario (H4).
 %   R = run_demo('A')            live: plant + sensor noise + streaming detector
-%   R = run_demo('AB', 'replay') replay: the measured signals of pi/test_vectors/detector_AB.mat
+%   R = run_demo('AB', 'replay') replay: the measured signals of pi/scenarios/demo_reference_AB.mat
 %   Scenarios from change_detector.demoScenario ('A', 'B', 'AB'): 6 swaths, change after turn 2.
 %   The sensor noise is the same as in run_demo_replay (seed 777, additive), so live mode must
 %   reproduce the offline reference too. Prints the verdict per turn and PASS/FAIL against
-%   pi/test_vectors/detector_<name>.mat.
+%   pi/scenarios/demo_reference_<name>.mat.
 
 if nargin < 1, name = 'A'; end
 if nargin < 2, mode = 'live'; end
@@ -15,7 +15,7 @@ mdl = 'tractor_change_detection';
 if ~bdIsLoaded(mdl), open_system(fullfile(projectRoot, 'models', [mdl '.slx'])); end
 
 sc = change_detector.demoScenario(name);
-ref = load(fullfile(projectRoot, 'pi', 'test_vectors', ['detector_' name '.mat']));
+ref = load(fullfile(projectRoot, 'pi', 'scenarios', ['demo_reference_' name '.mat']));
 t = sc.prof.t;
 zeroTt = timetable(seconds(t), zeros(size(t)), zeros(size(t)), zeros(size(t)), zeros(size(t)), ...
     'VariableNames', {'delta', 'Vx', 'r', 'ay'});

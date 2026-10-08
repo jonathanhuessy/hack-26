@@ -3,9 +3,9 @@
 %     t, delta, Vx, Fyd, Mzd   maneuver and disturbance at 100 Hz (inputs of pi/plant.py)
 %     p0, p1                   plant parameters [m lf lr Izz Caf Car sigmaF] before / after the change
 %     tStart, tEnd, imuX       change time (step: tStart = tEnd) and IMU position, as in plant.simulate
-%     noise                    N x 4 additive sensor noise [delta Vx r ay], seed 777 as in detector_*.mat
+%     noise                    N x 4 additive sensor noise [delta Vx r ay], seed 777 as in demo_reference_*.mat
 %     dmTrue, kfTrue, changeTurn, name   the true change, for display
-%   clean plant output + noise reproduces the measured signals of pi/test_vectors/detector_<name>.mat
+%   clean plant output + noise reproduces the measured signals of pi/scenarios/demo_reference_<name>.mat
 %   (up to single precision there).
 projectRoot = fileparts(fileparts(mfilename('fullpath')));
 addpath(projectRoot);
@@ -15,7 +15,7 @@ vec = @(p) [p.m p.lf p.lr p.Izz p.Caf p.Car p.sigmaF];
 
 for name = ["A", "B", "AB"]
     sc = change_detector.demoScenario(char(name));
-    ref = load(fullfile(projectRoot, 'pi', 'test_vectors', "detector_" + name + ".mat"), 'noiseSeed');
+    ref = load(fullfile(outDir, "demo_reference_" + name + ".mat"), 'noiseSeed');
     t = sc.prof.t;
     z = zeros(size(t));
     nz = change_detector.addSensorNoise(timetable(seconds(t), z, z, z, z, 'VariableNames', {'delta', 'Vx', 'r', 'ay'}), [], ref.noiseSeed);

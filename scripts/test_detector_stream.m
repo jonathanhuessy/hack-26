@@ -1,12 +1,12 @@
 % TEST_DETECTOR_STREAM  The streaming detector, fed sample by sample, must reproduce the offline
-%   reference pi/test_vectors/detector_<name>.mat (run_demo_replay): same verdict samples, classes,
+%   reference pi/scenarios/demo_reference_<name>.mat (run_demo_replay): same verdict samples, classes,
 %   probabilities and magnitudes. Prints PASS/FAIL per scenario and the time per sample.
 projectRoot = fileparts(fileparts(mfilename('fullpath')));
 addpath(projectRoot);
 W = load(fullfile(projectRoot, 'models', 'export', 'weights.mat'));
 ok = true;
 for name = ["A", "B", "AB"]
-    ref = load(fullfile(projectRoot, 'pi', 'test_vectors', "detector_" + name + ".mat"));
+    ref = load(fullfile(projectRoot, 'pi', 'scenarios', "demo_reference_" + name + ".mat"));
     det = change_detector.StreamingDetector('W', W, 'fs', ref.fs, 'K', ref.K);
     N = size(ref.meas, 1);
     got = struct('k', [], 'cls', [], 'p', zeros(0, 4), 'dm', [], 'kf', [], 'clsTurn', []);

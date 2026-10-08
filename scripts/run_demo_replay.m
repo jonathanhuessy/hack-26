@@ -5,7 +5,7 @@ function R = run_demo_replay(names)
 %   Per scenario: simulate (change after turn 2 of 6), add sensor noise, detect turns, compute
 %   features, run the exported models (mlpForward) and the verdict rule (aggregateVerdict, last
 %   K = 3 turns). Writes data/results/demo_<name>.png (truth vs estimate per turn) and the
-%   detector reference pi/test_vectors/detector_<name>.mat (contract 5), which Simulink and the
+%   detector reference pi/scenarios/demo_reference_<name>.mat, which Simulink and the
 %   Pi must reproduce.
 
 if nargin < 1, names = {'A', 'B', 'AB'}; end
@@ -64,7 +64,9 @@ for s = 1:numel(names)
         'X', X, 'selectedIdx', sel(:)', 'P', P, 'dmTurn', dmTurn, 'kfTurn', kfTurn, 'clsTurn', clsTurn, ...
         'clsVerdict', clsV, 'pVerdict', pV, 'dmVerdict', dmV, 'kfVerdict', kfV, ...
         'clsTrue', clsTrue, 'dmTrue', dmTrue, 'kfTrue', kfTrue, 'tChange', sc.sched.tStart);
-    save(fullfile(projectRoot, 'pi', 'test_vectors', ['detector_' sc.name '.mat']), '-struct', 'ref', '-v7');
+    refDir = fullfile(projectRoot, 'pi', 'scenarios');
+    if ~isfolder(refDir), mkdir(refDir); end
+    save(fullfile(refDir, ['demo_reference_' sc.name '.mat']), '-struct', 'ref', '-v7');
     R.(sc.name) = ref;
 end
 end

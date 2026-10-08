@@ -221,6 +221,38 @@ run_demo_replay         % demo scenarios A, B, AB (6 swaths, change after turn 2
 
 `models/export/weights.mat` is all the Simulink model and the Pi need: `mu`, `sigma`, `featureNames` (18, comma-separated), `classNames` (`nominal,A,B,AB`), classifier `W1 b1 W2 b2 W3 b3`, regressor `V1 c1 V2 c2 V3 c3` with outputs `[dm kg; kf]`. Evaluate it with `change_detector.mlpForward(X, W)`, where `X` holds the raw features in the order of `featureNames`. Report `dm` only if the class contains A, `kf` only if it contains B. Validation results are in `plan.md`, H2.
 
+### How a prediction is made
+
+Each detected turn is processed on its own; the results of the last 3 turns are then combined into the verdict. No if-then rules are written by hand: all combinations of features are learned weights.
+
+```mermaid
+flowchart LR
+  T["One detected turn<br/>(window + preceding straight)"] --> F["turnFeatures:<br/>35 numbers"]
+  F --> S["select 18<br/>(selectedFeatureNames)"]
+  S --> Z["standardise<br/>z = (x − μ) / σ"]
+  Z --> C["Classifier 18→16→8→4<br/>ReLU, softmax"]
+  Z --> R["Regressor 18→32→16→2<br/>(dm net + kf net)"]
+  C --> P["P = [p_nominal, p_A, p_B, p_AB]"]
+  R --> M["Δm [kg], k_f"]
+  P --> V["aggregateVerdict<br/>last 3 turns"]
+  M --> V
+  V --> O["class, Δm, k_f"]
+```
+
+1. **Features:** `turnFeatures` computes 35 numbers per turn; the 18 in `selectedFeatureNames` are used. They need only $\delta$, $V_x$ and $r$.
+2. **Standardise:** $z = (x - \mu)/\sigma$ with the training mean and standard deviation. All features then have a similar scale (about −2 to +2), so units such as m/s versus log power don't bias the weights.
+3. **Classifier** (small neural network, 476 parameters):
+   - Layer 1 has 16 neurons. Each computes a weighted sum of all 18 standardised features plus an offset, and negative results are set to 0 (ReLU): $h_{1,i} = \max(0, \sum_j W_{1,ij} z_j + b_{1,i})$. Each neuron is a learned combination, for example "power at 1.5–3 Hz low and wobble frequency normal" (typical for rear ballast) or "power at 0.6–1 Hz high and frequency low" (softer front tires).
+   - Layer 2 combines these 16 signals into 8 in the same way.
+   - The output layer gives 4 scores, turned into probabilities that sum to 1 (softmax).
+   - The weights were learned from the training turns, with regularisation keeping them small to avoid overfitting.
+4. **Regressors:** two separate small networks (18→16→8→1) on the same inputs. One estimates $\Delta m$ and was trained only on turns with ballast; the other estimates $k_f$ and was trained only on turns with a tire change. For export they are stacked side by side into one network with 2 outputs; they don't interact.
+5. **Verdict** (`aggregateVerdict`, after each new turn, over the last 3 turns):
+   - **Class:** the mean of the 3 probability vectors, then the most likely class. One uncertain turn can't flip the verdict.
+   - **$\Delta m$ and $k_f$:** the median of the 3 per-turn estimates, reported only if the class contains that change (otherwise $\Delta m$ = 0, $k_f$ = 1). Without ballast the $\Delta m$ network still outputs about 400 kg, which is why this gating matters.
+
+On the Pi the whole chain after the features is a few matrix multiplications per turn: `change_detector.mlpForward` in MATLAB, `pi/model.py` in Python.
+
 ## Raspberry Pi
 
 `pi/plant.py` is a line-by-line Python port of the plant. On the Pi:

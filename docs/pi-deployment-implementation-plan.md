@@ -98,6 +98,19 @@ Tasks:
 - A mid-run change is detected within the expected number of turns.
 - The same input produces matching verdicts in MATLAB, Python, and Simulink replay where available.
 
+Phase 2 implementation status:
+
+- `python -m pi.app --local` runs the deterministic Python plant through the
+  same `ArraySampleSource` and `EdgePipeline` path used by replay sources.
+- `A`, `B`, and `AB` scenarios mirror the MATLAB mass/CG/inertia and `Caf`
+  changes; constant, step, ramp, and reverse schedules are supported.
+- `pi/benchmark_local_demo.py` reports real-time factor, peak memory, sample
+  count, and final verdict timing. The checked-in host measurement is about
+  0.032 real-time factor for a 167.36 s stream with 21.2 MiB peak Python
+  allocation; repeat it on the target Pi before presentation.
+- `pi/test_local_demo.py` covers source determinism, contract isolation,
+  scenario endpoints, bounded history, and three-turn local verdict output.
+
 ## Phase 3 — Replay and parity validation
 
 Build a deterministic validation path before adding network transport:

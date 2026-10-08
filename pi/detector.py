@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from collections import deque
 from typing import Any
 
 import numpy as np
@@ -73,6 +74,12 @@ class TurnDetector:
         self.min_heading_rad = np.deg2rad(min_heading_deg)
         self.aggregate_turns = aggregate_turns
         self._b_lp, self._a_lp = butter(2, 1.0 / (sample_rate_hz / 2))
+        # Keep enough history for the longest feature window and the preceding
+        # straight, but do not retain an entire multi-minute run.
+        self.history_n = max(
+            self.straight_n + 2 * self.margin_n + round(45.0 * sample_rate_hz),
+            round(60.0 * sample_rate_hz),
+        )
         self.reset()
 
     def start(self) -> None:
@@ -82,7 +89,10 @@ class TurnDetector:
         if not self._started:
             self.start()
         self._samples.append(sample)
-        index = len(self._samples) - 1
+        if len(self._samples) > self.history_n:
+            self._samples.popleft()
+            self._sample_start_index += 1
+        index = self._sample_start_index + len(self._samples) - 1
         self._process_trigger(index)
         verdict = self._maybe_emit(sample.timestamp_s)
         status = SampleStatus.ACCEPTED
@@ -95,7 +105,8 @@ class TurnDetector:
         return DetectorEvent(SampleStatus.ACCEPTED, self.state)
 
     def reset(self) -> None:
-        self._samples: list[MeasuredSample] = []
+        self._samples: deque[MeasuredSample] = deque()
+        self._sample_start_index = 0
         self._started = False
         self.state = DetectorState.IDLE
         self._in_turn = False
@@ -113,7 +124,7 @@ class TurnDetector:
         filtered, self._filter_state = lfilter(
             self._b_lp,
             self._a_lp,
-            [self._samples[index].delta],
+            [self._samples[-1].delta],
             zi=self._filter_state,
         )
         magnitude = abs(filtered[0])
@@ -132,7 +143,10 @@ class TurnDetector:
             exit_index = index - self.hold_n + 1
             entry_index = self._entry_index
             assert entry_index is not None
-            yaw = sum(sample.yaw_rate for sample in self._samples[entry_index:exit_index + 1])
+            yaw = sum(
+                self._sample_at(i).yaw_rate
+                for i in range(entry_index, exit_index + 1)
+            )
             heading = yaw / self.fs
             if abs(heading) >= self.min_heading_rad:
                 self._pending = (entry_index, exit_index)
@@ -147,16 +161,21 @@ class TurnDetector:
         if self._pending is None:
             return None
         entry, exit_index = self._pending
-        if not force and len(self._samples) - 1 < exit_index + self.margin_n:
+        latest_index = self._sample_start_index + len(self._samples) - 1
+        if not force and latest_index < exit_index + self.margin_n:
             return None
         start = max(0, entry - self.margin_n)
-        end = min(len(self._samples), exit_index + self.margin_n + 1)
+        end = min(latest_index + 1, exit_index + self.margin_n + 1)
         values = np.array(
-            [[sample.delta, sample.vx, sample.yaw_rate] for sample in self._samples],
+            [
+                [sample.delta, sample.vx, sample.yaw_rate]
+                for sample in self._samples
+            ],
             dtype=float,
         )
-        window = values[start:end]
-        candidates = np.flatnonzero(values[:start, 1] > self.straight_min_vx)
+        first = self._sample_start_index
+        window = values[start - first:end - first]
+        candidates = np.flatnonzero(values[:max(0, start - first), 1] > self.straight_min_vx)
         if candidates.size:
             candidates = candidates[-self.straight_n:]
             straight = values[candidates]
@@ -189,3 +208,10 @@ class TurnDetector:
         self._pending = None
         self.state = DetectorState.IDLE
         return verdict
+
+    def _sample_at(self, index: int) -> MeasuredSample:
+        """Return an absolute-indexed sample from the bounded history."""
+        relative = index - self._sample_start_index
+        if relative < 0 or relative >= len(self._samples):
+            raise IndexError("detector history no longer contains requested sample")
+        return self._samples[relative]

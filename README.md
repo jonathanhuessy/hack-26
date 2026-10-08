@@ -58,6 +58,29 @@ aggregation behind the Phase 0 pipeline. The `.mat` feature fixtures under
 `pi/test_vectors/` are MATLAB reference vectors for parity; their fourth
 `ay` column is diagnostic-only and is not forwarded to the detector.
 
+## Phase 2 local demo
+
+Run the co-located plant and edge classifier without MATLAB, network
+connectivity, or a replay file:
+
+```bash
+python -m pi.app --local --scenario A --change-type step --t-start 30
+python -m pi.app --local --scenario B --change-type ramp --t-start 0
+```
+
+Supported scenarios are `nominal`, `A` (rear ballast), `B` (front tire
+stiffness), and `AB`. Changes can be `constant`, `step`, or `ramp`; use
+`--reverse` for changed-to-nominal runs, `--noise-seed` for deterministic
+sensor noise, and `--realtime` to pace samples at 100 Hz. The detector uses
+a bounded history sized for its feature windows and reports each turn verdict
+with its confidence, timestamp, and regression outputs.
+
+Measure local throughput and peak Python memory with:
+
+```bash
+python -m pi.benchmark_local_demo --scenario A --change-type step
+```
+
 ## Quickstart (MATLAB)
 
 Open MATLAB in the repo root and run:

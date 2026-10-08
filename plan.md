@@ -238,7 +238,7 @@ Rules: train only in MATLAB. Simulink and Python never see the dataset files for
 1. **Window:** one window per turn, from 5 s before turn entry to 5 s after turn exit, as 4 columns of measured signals `[deltaMeas VxMeas rMeas ayMeas]` at 100 Hz, plus the preceding straight (the last 20 s before the window, speed above 3 m/s). Turn entry: $|\delta|$ (low-passed at 1 Hz) rises above 5°. Turn exit: it falls below 3° (hysteresis). Only measured signals are used, never `segment` or any label.
 2. **Feature function:** `x = change_detector.turnFeatures(win, straight, fs)` returns a row vector, and `change_detector.turnFeatureNames()` its names in a fixed order. Only basic operations (filter with fixed coefficients, sums, max, explicit cross-correlation), so the Python port is line-by-line.
 3. **Weights file** `models/export/weights.mat`: `mu`, `sigma` (feature normalisation), `featureNames`, classifier `W1 b1 W2 b2 W3 b3` and regressor `V1 c1 V2 c2 V3 c3` (ReLU hidden layers, softmax on the classifier), `classNames`. A linear model is the same file with a single layer. As built in H2: matrices act on column vectors ($h_1 = \mathrm{relu}(W_1 z + b_1)$, $z = (x - \mu)/\sigma$), `featureNames` and `classNames` are comma-separated strings, and the regressor outputs `[dm in kg; kf]`. Reference implementation: `change_detector.mlpForward`.
-4. **Streaming detector:** `[out, newVerdict] = change_detector.detectorStep(u, W)` with `u = [delta Vx r ay]` for one sample, internal state in `persistent` variables. When a turn ends it computes features and the model outputs and sets `newVerdict`. `out` holds the last class probabilities (4), the regression outputs ($\Delta m$, $k_f$) and the median over the last K = 3 turns. The offline `findTurns` must use exactly the same trigger thresholds. Verdict rule as built in H3: `change_detector.aggregateVerdict` (class = argmax of the mean probabilities of the last K turns, magnitudes = median, gated by the class).
+4. **Streaming detector:** `[out, newVerdict] = change_detector.detectorStep(u, W)` with `u = [delta Vx r ay]` for one sample, internal state in `persistent` variables. When a turn ends it computes features and the model outputs and sets `newVerdict`. `out` holds the last class probabilities (4), the regression outputs ($\Delta m$, $k_f$) and the median over the last K = 3 turns. The offline `findTurns` must use exactly the same trigger thresholds. Verdict rule as built in H3: `change_detector.aggregateVerdict` (class = argmax of the mean probabilities of the last K turns, magnitudes = median, gated by the class). As built in H4: a System object instead of a function with persistent variables (clean reset, usable in MATLAB loops and in a MATLAB System block): `det = change_detector.StreamingDetector('W', W)`, `[cls, p, dm, kf, clsTurn, newVerdict] = det(u)`. The verdict is due `marginS` (5 s) after turn exit, at the end of the window, and is held until the next one; `clsTurn` = class of the latest turn alone (-1 before the first turn); ring buffer 150 s. The Pi port (`pi/detector.py`) should mirror this class.
 5. **Test vectors** `pi/test_vectors/detector_<class>.mat`: measured inputs of one run, plus expected feature vectors, probabilities, regression outputs and verdicts per turn. As built in H3: `detector_A.mat`, `detector_B.mat`, `detector_AB.mat` from `scripts/run_demo_replay.m`. Fields:
    - `meas` (N × 4 `[delta Vx r ay]`), `fs`;
    - per turn: `iEntry`, `iExit`, `iVerdict` (sample at which the window ends and the verdict is due, 1-based), `X` (35 features), `selectedIdx`, `P`, `dmTurn`, `kfTurn`, `clsTurn`, `clsVerdict`, `pVerdict`, `dmVerdict`, `kfVerdict`, and the truth `clsTrue`, `dmTrue`, `kfTrue`.
@@ -421,14 +421,124 @@ On the test split, in `scripts/evaluate_models.m`:
   - Replay mode: a switch that feeds the measured signals of a stored demo run instead of the live plant. Use it to prove that Simulink gives the same verdicts as the offline MATLAB path.
 - **Demo scenario `scripts/run_demo.m`:** nominal on swath 1, +1500 kg on the rear hitch from the start of swath 2 (parameter step), optionally $k_f$ = 0.7 later. The verdict should change after turn 1 or 2 and be stable after K = 3 turns.
 - **Done when:** Simulink verdicts match the offline MATLAB verdicts on one run per class (replay mode), and the live demo scenario shows the change.
+- **Status: done.**
+  - **Streaming detector:** `change_detector.StreamingDetector` (System object, contract 4).
+    - The trigger low-pass is implemented sample by sample in the same direct form as `filter`.
+    - Windows are cut from a 150 s ring buffer.
+    - Then `turnFeatures`, `mlpForward` and `aggregateVerdict` (K = 3).
+    - `scripts/test_detector_stream.m` feeds the reference runs sample by sample: the same 6 verdict samples, classes and magnitudes as `run_demo_replay`, differences below 5e-16. PASS for A, B and AB, about 10–15 µs per sample in MATLAB.
+  - **Simulink model `models/tractor_change_detection.slx`:**
+    - Plant subsystem: a copy of `tractor_plant.slx`, same model-workspace variables `p0 p1 tStart tEnd imuXRearAxleM x0_plant tStop`.
+    - Maneuver From Workspace `maneuverIn` = `[t delta Vx Fyd Mzd]`.
+    - Sensor noise From Workspace `noiseIn`: additive, the same noise as `addSensorNoise` with seed 777, so live mode can be compared with the reference.
+    - Replay From Workspace `replayIn` (measured signals of a reference run), selected by the source switch (`useReplay`).
+    - Zero-order hold at 0.01 s, then the MATLAB System block `ChangeDetector` (Interpreted execution, weights `detW`).
+    - Dashboard: displays for the verdict class, $\Delta m$, $k_f$ and the latest single-turn class; a verdict scope; the XY path; a scope of measured vs kinematic yaw rate.
+    - To Workspace logs `detCls detP detDm detKf detClsTurn detNew`.
+  - **Demo script `scripts/run_demo.m`:** `run_demo(name, mode)`, with `name` A/B/AB from `demoScenario` (6 swaths, change after turn 2) and `mode` `'live'` or `'replay'`. It sets all variables through `Simulink.SimulationInput`, runs about 400 s of simulated time in about 2 s, prints the verdict per turn and compares with `pi/test_vectors/detector_<name>.mat`.
+  - **Result:** PASS for all three scenarios in both modes.
+    - Replay: identical, differences below 5e-16.
+    - Live: differences of about 4e-7, because the reference stores the measured signals in single precision.
+    - The verdict changes on turn 4 (the first turn after the change already shows it in the single-turn class) and converges: $\Delta m$ 1302 → 1425 → 1505 kg, $k_f$ 0.75 → 0.73 → 0.71.
 
 ### H5. Raspberry Pi port (Python, Track C)
-- Files: `pi/plant.py` (done), `pi/features.py` (line-by-line port of `turnFeatures`), `pi/detector.py` (ring buffer and trigger as a class, same thresholds), `pi/model.py` (forward pass in NumPy, about 10 lines, reads `weights.mat` with `scipy.io.loadmat`), `pi/noise.py` (sensor noise) and `pi/app.py`.
-- `pi/app.py` loop: plant with an injected change → sensor noise → detector → verdict print or live plot. Needs only NumPy and SciPy, no network.
-- Start with dummy weights and a stub feature function, so `app.py` already runs end to end. Port `turnFeatures` when its MATLAB version is stable.
-- **Parity tests** (`pi/test_detector_parity.py`) against the test vectors from MATLAB: features (relative difference below 1e-6), probabilities and regression outputs (below 1e-5), and the verdict sequence, for at least one run per class. Export the vectors with `scripts/export_pi_test_vectors.m` (extend it with the detector).
-- Report the real-time factor of the full loop on the Pi (target well below 1).
-- **Done when:** the parity tests pass on the Pi and `app.py` shows the same verdicts as the Simulink demo for the same scenario.
+
+**Goal:** the Pi runs the whole chain offline (plant with an injected change → sensor noise → streaming detector → verdict), and gives the same verdicts as MATLAB and Simulink. It depends only on MATLAB artefacts that already exist (H1–H4); Simulink is not needed.
+
+**Already there:**
+- `pi/plant.py` and `pi/test_plant_parity.py`: plant port, parity with Simulink, real-time factor.
+- `models/export/weights.mat`: the 18-feature classifier and regressor.
+- Reference data in `pi/test_vectors/` (MATLAB v7, read with `scipy.io.loadmat(path, squeeze_me=True)`):
+  - `features_<nominal|A|B|AB>.mat`: one validation run per class with the measured signals `meas` (N × 4 `[delta Vx r ay]`), `fs`, the trigger results `iEntry`, `iExit`, `headingRad`, the window rows `i0`, `i1`, the straight rows `s0`, `s1`, the expected 35 features per turn `X`, `featureNames`, `selectedIdx`, `trigger` (all thresholds), and every filter coefficient: `bLp`, `aLp`, `bands`, `bBand`, `aBand`, `bAR`, `aAR`.
+  - `model_forward.mat`: 100 rows of the 18 selected features `X`, expected `P` (4 class probabilities), `dm` [kg], `kf`.
+  - `detector_<A|B|AB>.mat`: a whole demo run. Measured signals `meas`, `fs`, `K`, and per turn: `iEntry`, `iExit`, `iVerdict` (sample at which the verdict is due), `X`, `P`, `dmTurn`, `kfTurn`, `clsTurn`, `clsVerdict`, `pVerdict`, `dmVerdict`, `kfVerdict`, and the truth `clsTrue`, `dmTrue`, `kfTrue`.
+- **All indices in the `.mat` files are 1-based (MATLAB).** Subtract 1 in Python.
+
+**Steps** (each one has a test; go in this order):
+
+1. **`pi/model.py`**, port of `change_detector.mlpForward` and `change_detector.aggregateVerdict`.
+   - `load_weights(path)` returns a dict from `weights.mat`. `featureNames` and `classNames` are comma-separated strings; the bias vectors come back 1-D with `squeeze_me=True`.
+   - `forward(X, W)`: `Z = (X - mu)/sigma`; `h1 = relu(W1 @ z + b1)`; `h2 = relu(W2 @ h1 + b2)`; `P = softmax(W3 @ h2 + b3)` (subtract the max before `exp`). Regressor: same with `V*`, `c*` and a linear output; row 1 = `dm` [kg], row 2 = `kf`. Matrices act on column vectors.
+   - `aggregate(P, dm, kf)` over the last K turns:
+     - class = argmax of the mean of `P` over the turns (first maximum on ties);
+     - `dm` = median of the turn estimates if the class contains A (class 1 or 3), else 0;
+     - `kf` = median if the class contains B (class 2 or 3), else 1.
+   - **Test:** `model_forward.mat`, maximum difference below 1e-9.
+2. **`pi/features.py`**, port of `change_detector.turnFeatures`, `turnWindow` and `turnTriggerConfig`. 35 features in the order of `turnFeatureNames`; only the 18 in `selectedIdx` are used later, but port all 35 so the test covers everything. Line-by-line notes:
+   - `L = 2.81`; thresholds from `turnTriggerConfig`: `marginS` 5, `straightS` 20, `straightMinVx` 3, `lowpassHz` 1, `entryRad` 5°, `exitRad` 3°, `holdS` 2, `minHeadingRad` 120°.
+   - **Filters:** `scipy.signal.butter(2, f/(fs/2), btype='bandpass')` (or `'low'`) gives the same coefficients as MATLAB `butter`; compare with `bBand`/`aBand` once. MATLAB `filter(b, a, x)` = `scipy.signal.lfilter(b, a, x)` with zero initial state. `bandLogPower` subtracts `x[0]` before filtering.
+   - **Index ranges** (MATLAB → Python):
+     - `use = warm+1:N` → `x[warm:]` with `warm = 200`;
+     - `core = nM+1:N-nM` → `x[nM:N-nM]` with `nM = 500`;
+     - in `ar2Mode`, `y(use(1):5:use(end))` → `y[warm::5]`.
+   - **Frequency grids:** `0.5:0.02:3` and `lo:0.02:hi` are MATLAB colon ranges and include the end point. Build them as `lo + 0.02*np.arange(round((hi - lo)/0.02) + 1)`, not with `np.arange(lo, hi, 0.02)`, which can drop or add the end point.
+   - **Hann window** in `dftAt`: `0.5 - 0.5*cos(2*pi*k/(n-1))` for `k = 0..n-1`, applied to `x - mean(x)`. The DFT is `exp(-2j*pi*f[:,None]/fs*k[None,:]) @ (...)`.
+   - **`spectralPeak`:**
+     - parabolic interpolation on `log(P)`, only if the peak is not at the grid edge and the curvature `den < 0`;
+     - `height = log10(Pmax/median(P))`;
+     - half-power width by walking left and right while `P >= Pmax/2`, then `zeta = width*df/(2*fpk)`.
+   - **`ar2Mode`:**
+     - least squares `c = solve(Phi.T @ Phi, Phi.T @ y[2:])` with `Phi = [y[1:-1], y[:-2]]`;
+     - complex poles if `a1^2 + 4*a2 < 0`, otherwise `fn = 0` and `zeta = 1`;
+     - clip `a1/(2*sqrt(-a2))` to [-1, 1] before `acos`.
+   - **MATLAB functions with direct equivalents:**
+     - `sign` → `np.sign`, `median` → `np.median`;
+     - `mean(logical)` = fraction of true values;
+     - `angle` → `np.angle`, `abs` on complex → `np.abs`.
+   - **Straight segment:** if it has fewer than `10*fs` rows, all 8 straight features are 0.
+   - **`turn_window(meas, i_entry, i_exit, fs)`:**
+     - window rows `i0 = max(0, i_entry - nM)` to `i1 = min(N-1, i_exit + nM)`, inclusive;
+     - straight = the last `straightS*fs` rows before `i0` with `Vx > 3`.
+   - **`find_turns(delta, r, fs)`:** the loop of `findTurns` on `lfilter(bLp, aLp, delta)`; returns `(i_entry, i_exit, heading)` per turn.
+   - **Tests on `features_*.mat`:**
+     - turns, windows and straight rows identical (after the −1 shift);
+     - features: `|x_py - x_ref| <= 1e-6*max(1, |x_ref|)` per element;
+     - also feed the reference windows directly, so feature errors and trigger errors can be told apart.
+3. **`pi/detector.py`**, port of the System object `change_detector.StreamingDetector` as a class `StreamingDetector(W, fs=100, K=3, buffer_s=150)` with `step(u) -> (cls, p, dm, kf, cls_turn, new_verdict)`, `u = [delta, Vx, r, ay]` for one sample.
+   - Ring buffer of `buffer_s*fs` rows and a sample counter `n` (keep it 1-based like MATLAB, or shift all comparisons consistently).
+   - **Low-pass sample by sample** in the same direct form as `lfilter`:
+     - `y = b0*x + z0`;
+     - `z0 = b1*x + z1 - a1*y`;
+     - `z1 = b2*x - a2*y`.
+   - **Trigger:**
+     - entry when `|y| > entryRad`;
+     - in a turn, count the samples with `|y| < exitRad` (reset to 0 otherwise); when the count reaches `holdN = 200`, then `iExit = k - holdN + 1`;
+     - keep the turn only if `|sum(r[iEntry..iExit])|/fs >= minHeadingRad`.
+   - **Verdict:**
+     - when `k == iExit + nM` (500 samples later), cut the window and the straight from the buffer as in `turn_window`;
+     - compute the 35 features, take the 18 at `selectedIdx`, run `forward`, append to the turn history, and update the verdict with `aggregate` over the last K turns;
+     - return `new_verdict = True` on that sample only. Outputs hold their value in between; `cls_turn = -1` before the first turn.
+   - **Test:** feed `detector_<A|B|AB>.mat` row by row. Required:
+     - `new_verdict` at exactly `iVerdict - 1` (0-based);
+     - `clsVerdict` and `clsTurn` identical;
+     - `pVerdict`, `dmVerdict`/1000 and `kfVerdict` within 1e-9.
+4. **`pi/noise.py`**, port of `change_detector.addSensorNoise`. It only needs the same noise levels, not bit-identical values (NumPy's random generator differs from MATLAB's):
+   - gyro: white 0.01 rad/s plus a constant bias drawn with std 0.002 rad/s;
+   - steering: 0.2° white plus a 0.1° bias;
+   - speed: 0.02 m/s;
+   - accelerometer: 0.2 m/s² white, a 0.05 m/s² bias, and 0.15 m/s² band-pass vibration at 8–30 Hz (not used by the 18 features).
+5. **Scenario inputs for the Pi**, done by Track A in MATLAB: `scripts/export_pi_scenarios.m` writes `pi/scenarios/scenario_<A|B|AB>.mat` with `t`, `delta`, `Vx`, `Fyd`, `Mzd`, `p0`, `p1` (7 plant parameters before and after the change), `tStart`, `tEnd`, `imuX`, the true change for display, and `noise` (N × 4 additive sensor noise from MATLAB, seed 777, the same as in `detector_*.mat`). This avoids porting the maneuver generator: the Pi simulates the plant itself from these inputs.
+   - **Done:** files are about 1.7 MB each. Check: `plant.simulate` on a scenario plus `noise` reproduces `meas` of `detector_<name>.mat` to 2.4e-7 at most, i.e. the single-precision rounding of the reference.
+6. **`pi/app.py`**, the demo: `python3 app.py A`.
+   1. Load `scenario_A.mat` and `weights.mat`.
+   2. Run `plant.simulate`.
+   3. Add noise with `noise.py`, or with `--matlab-noise` use the exported `noise` instead, which gives end-to-end parity with MATLAB and Simulink.
+   4. Feed the detector sample by sample, as if live.
+   5. On each `new_verdict` print one line: time, turn, single-turn class, verdict class, `dm`, `kf`, and the truth.
+   - Optionally a `--realtime` flag that sleeps to wall-clock speed (or a speed-up factor) for the live demo, and a simple matplotlib or terminal display.
+   - Print the real-time factor of the whole loop at the end.
+7. **`pi/test_detector_parity.py`**: one script running the tests of steps 1–3 and printing PASS/FAIL per test.
+
+**On the Pi:**
+- Install: `sudo apt install python3-numpy python3-scipy` (optionally `python3-matplotlib`).
+- Copy the folder: `scp -r pi/ models/export/weights.mat pi@<host>:~/tractor/`, or `git pull` on the Pi.
+- Run `python3 test_plant_parity.py`, then `python3 test_detector_parity.py`, then `python3 app.py A`.
+- No network needed at runtime.
+
+**Done when:**
+- all parity tests pass on the Pi;
+- `app.py A --matlab-noise` (and B, AB) prints the same verdict sequence as `run_demo` in Simulink: turns 1–3 nominal, then from turn 4 A with Δm 1302 → 1425 → 1505 kg (B: k_f 0.75 → 0.73 → 0.71). Without `--matlab-noise` the same pattern is expected, with slightly different numbers;
+- the real-time factor of the full loop is reported, with a target well below 1.
 
 ### H6. Demo and pitch material (everyone)
 - Live: Simulink demo on the PC and `pi/app.py` on the Pi, same scenario, same verdicts.

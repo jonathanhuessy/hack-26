@@ -6,7 +6,7 @@ The full design, decisions and progress checklist are in [plan.md](plan.md). Rea
 
 ## Status
 
-Preparation phase (simulator, labelled raw dataset): done, see the checklist in `plan.md`. Hackathon day: H1 (turn detection and features), H2 (training, exported weights) and H3 (evaluation: 90 % per run on the test split, no false alarms) are done; the Simulink inference model and the Pi demo are in progress.
+Preparation phase (simulator, labelled raw dataset): done, see the checklist in `plan.md`. Hackathon day: H1 (turn detection and features), H2 (training, exported weights), H3 (evaluation: 90 % per run on the test split, no false alarms) and H4 (streaming detector and Simulink demo) are done; the Pi demo is in progress.
 
 ## Requirements
 
@@ -253,6 +253,26 @@ flowchart LR
 
 On the Pi the whole chain after the features is a few matrix multiplications per turn: `change_detector.mlpForward` in MATLAB, `pi/model.py` in Python.
 
+## Streaming detector and Simulink demo (H4)
+
+```matlab
+test_detector_stream    % System object fed sample by sample vs the offline reference (PASS for A, B, AB)
+run_demo('A')           % Simulink demo, live: plant + sensor noise + detector (also 'B', 'AB')
+run_demo('A', 'replay') % same, fed with the stored measured signals of pi/test_vectors/detector_A.mat
+```
+
+- `change_detector.StreamingDetector` is the online detector (a System object). Create it with `det = change_detector.StreamingDetector('W', W)`, then call `[cls, p, dm, kf, clsTurn, newVerdict] = det([delta Vx r ay])` once per sample at 100 Hz.
+  - It keeps a 150 s ring buffer and runs the same turn trigger as `findTurns`.
+  - 5 s after each turn exit it computes the features, runs the networks and updates the verdict over the last 3 turns (`newVerdict` = 1 on that sample).
+- `models/tractor_change_detection.slx` is the Simulink demo:
+  - Plant subsystem, driven by the maneuver.
+  - Additive sensor noise.
+  - Source switch: live or replay (`useReplay`).
+  - Zero-order hold at 100 Hz.
+  - `ChangeDetector`, a MATLAB System block using `StreamingDetector`, Interpreted execution.
+  - Dashboard: displays for the verdict class, $\Delta m$, $k_f$ and the latest single-turn class; verdict scope; XY path; measured vs kinematic yaw rate.
+  - All variables are set by `scripts/run_demo.m`. The demo scenarios come from `change_detector.demoScenario`: 6 swaths, change after turn 2.
+
 ## Raspberry Pi
 
 `pi/plant.py` is a line-by-line Python port of the plant. On the Pi:
@@ -270,12 +290,15 @@ Test vector for the forward pass (`pi/model.py`): `pi/test_vectors/model_forward
 
 Reference for the whole streaming detector (Simulink and `pi/app.py`): `pi/test_vectors/detector_{A,B,AB}.mat`, written by `scripts/run_demo_replay.m` from the demo scenarios in `change_detector.demoScenario`. Each file holds the measured signals of the run and, per detected turn, the trigger indices, the sample at which the verdict is due (`iVerdict`), the features, the model outputs, the verdict over the last 3 turns (`aggregateVerdict`) and the truth. Fields are listed in `plan.md`, contract 5.
 
+Demo inputs for `pi/app.py`: `pi/scenarios/scenario_{A,B,AB}.mat`, written by `scripts/export_pi_scenarios.m`. They hold the maneuver and disturbance (inputs of `plant.simulate`), the plant parameters before and after the change, the change time, the true change, and the MATLAB sensor noise (`noise`, N × 4, additive). Plant output plus `noise` reproduces the measured signals of `detector_<name>.mat`. The full Pi work list is in `plan.md`, H5.
+
 ## Layout
 
 ```
 +change_detector/   MATLAB package: parameters, scenarios, maneuver, disturbance, plant wrapper, dataset, sensor noise,
                     turn trigger, windows, features
-models/             tractor_plant.slx (Simulink plant, fixed-step ode4, 0.01 s)
+models/             tractor_plant.slx (Simulink plant, fixed-step ode4, 0.01 s), tractor_change_detection.slx (demo with
+                    streaming detector), trained.mat, export/weights.mat
 scripts/            checks, dataset generation, features (build, explore, select, plot_run), test vector export
 data/               index.mat, config.mat, features.mat, results/, runs/ (large files are not in git)
 pi/                 Python port for the Raspberry Pi, parity tests, test_vectors/

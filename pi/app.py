@@ -14,6 +14,8 @@ try:
     from .noise import NoisySource
     from .pipeline import EdgePipeline
     from .sources import MatlabFeatureReplaySource, ReplaySampleSource
+    from .transport.adapters import FileSampleSource
+    from .transport.tcp import TcpConfig, TcpSampleSource
 except ImportError:
     from contracts import ExecutionConfig
     from detector import TurnDetector
@@ -22,6 +24,8 @@ except ImportError:
     from noise import NoisySource
     from pipeline import EdgePipeline
     from sources import MatlabFeatureReplaySource, ReplaySampleSource
+    from transport.adapters import FileSampleSource
+    from transport.tcp import TcpConfig, TcpSampleSource
 
 
 def run(
@@ -38,11 +42,20 @@ def run(
     profile_seed: int = 1,
     disturbance_seed: int = 1,
     realtime: bool = False,
+    tcp_listen: tuple[str, int] | None = None,
+    transport_file: str | Path | None = None,
 ) -> int:
     default_weights = Path(__file__).resolve().parents[1] / "models" / "export" / "weights.mat"
     weight_path = Path(weights) if weights else (default_weights if default_weights.exists() else None)
     model = load_weights(weight_path) if weight_path else dummy_model()
-    if local or replay is None:
+    if tcp_listen:
+        host, port = tcp_listen
+        source = TcpSampleSource(TcpConfig(host=host, port=port, reconnect=True))
+        source_name = f"tcp://{host}:{port}"
+    elif transport_file:
+        source = FileSampleSource(transport_file, realtime=realtime)
+        source_name = str(transport_file)
+    elif local or replay is None:
         local_config = LocalScenario(
             name=scenario,
             change_type=change_type,
@@ -75,6 +88,9 @@ def run(
             f"t={verdict.timestamp_s:.2f}s"
         )
     print(f"processed {len(events)} samples, {len(verdicts)} verdicts")
+    statuses = getattr(source, "statuses", ())
+    for status in statuses:
+        print(f"transport_status={status.kind} message={status.message}")
     return 0
 
 
@@ -92,7 +108,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--realtime", action="store_true", help="pace samples at the configured sample period")
     parser.add_argument("--weights", type=Path, help="MATLAB weights.mat artifact")
     parser.add_argument("--noise-seed", type=int, help="deterministic sensor-noise seed")
+    parser.add_argument(
+        "--tcp-listen",
+        metavar="HOST:PORT",
+        help="receive a separated PC stream over TCP",
+    )
+    parser.add_argument(
+        "--transport-file",
+        type=Path,
+        help="replay a framed JSON transport capture",
+    )
     args = parser.parse_args(argv)
+    tcp_listen = None
+    if args.tcp_listen:
+        try:
+            host, port_text = args.tcp_listen.rsplit(":", 1)
+            tcp_listen = (host, int(port_text))
+        except ValueError as exc:
+            parser.error("--tcp-listen must use HOST:PORT")
     return run(
         args.replay,
         args.weights,
@@ -106,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         profile_seed=args.profile_seed,
         disturbance_seed=args.disturbance_seed,
         realtime=args.realtime,
+        tcp_listen=tcp_listen,
+        transport_file=args.transport_file,
     )
 
 

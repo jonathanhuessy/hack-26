@@ -144,6 +144,11 @@ Phase 3 implementation status:
 
 ## Phase 4 — Separated PC plant and Pi edge device
 
+Implementation status: complete for the initial TCP/JSON transport prototype.
+The protocol and operations are documented in
+[phase-4-transport.md](phase-4-transport.md). The separated mode remains
+optional; local and replay modes use the same edge pipeline.
+
 Add a transport adapter without changing the edge pipeline:
 
 ```text

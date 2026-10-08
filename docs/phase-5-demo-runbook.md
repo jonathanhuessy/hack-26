@@ -60,6 +60,13 @@ On the Pi, start the receiver:
 python -m pi.app --tcp-listen 0.0.0.0:8765 --realtime
 ```
 
+For a finite capture test, add `--tcp-no-reconnect` so the receiver exits
+after the sender's `end` record:
+
+```text
+python -m pi.app --tcp-listen 0.0.0.0:8765 --tcp-no-reconnect
+```
+
 On the PC, send the same deterministic local plant:
 
 ```text

@@ -6,13 +6,281 @@ The full design, decisions and progress checklist are in [plan.md](plan.md). Rea
 
 ## Status
 
-Preparation phase (simulator, labelled raw dataset): done, see the checklist in `plan.md`. Hackathon day: H1 (turn detection and features), H2 (training, exported weights), H3 (evaluation: 90 % per run on the test split, no false alarms) and H4 (streaming detector and Simulink demo) are done; the Pi demo is in progress.
+Preparation phase (simulator, labelled raw dataset): done, see the checklist in
+`plan.md`. The operator procedure for the PC simulation, Streamlit UI, and
+Raspberry Pi TCP listener is below.
 
 ## Requirements
 
 - MATLAB R2024b with Simulink, Control System Toolbox, Signal Processing Toolbox, Statistics and Machine Learning Toolbox, Deep Learning Toolbox.
 - `arion_630_parameters.m` calls `tf2ss_observable` (from the `icons-engineering-toolbox`). It must be on the MATLAB path on your machine. It is not needed on the Raspberry Pi.
 - Raspberry Pi side: Python 3 with NumPy and SciPy.
+- PC visualization: Matplotlib.
+
+## Pi input contract
+
+The deployable edge pipeline requires three measured inputs at 100 Hz:
+
+| Input | Unit | Meaning |
+|---|---|---|
+| `delta` | rad | Front-wheel steering angle, positive left |
+| `Vx` | m/s | Longitudinal speed, positive forward |
+| `r` | rad/s | Yaw rate, positive counter-clockwise |
+
+`ay`, labels, parameters, and simulator states are optional diagnostics for
+analysis and replay generation. They are not required by the Pi edge path and
+must not be used as detector inputs.
+
+The Phase 0 source-neutral seam can be smoke-tested without MATLAB or network
+connectivity:
+
+```bash
+python -m unittest discover -s pi -p "test_*.py"
+```
+
+This runs the local/replay contract tests with the checked-in fixture at
+`pi/test_vectors/phase0_three_input.json`. MATLAB replay metadata is generated
+by `scripts/export_pi_test_vectors.m`; plant numerical parity remains covered
+separately by `pi/test_plant_parity.py`.
+
+## Phase 1 deployable pipeline
+
+The Phase 1 Python path uses the H1-selected 18 features and the same
+three-input contract:
+
+```bash
+python -m unittest pi.test_feature_parity pi.test_model_parity pi.test_detector_parity
+python -m pi.app pi/test_vectors/features_nominal.mat
+```
+
+`pi/features.py` ports the selected feature calculations, `pi/model.py` loads
+the exported MATLAB artifact (or deterministic dummy weights), and
+`pi/detector.py` performs turn triggering, windowing, inference, and K=3
+aggregation behind the Phase 0 pipeline. The `.mat` feature fixtures under
+`pi/test_vectors/` are MATLAB reference vectors for parity; their fourth
+`ay` column is diagnostic-only and is not forwarded to the detector.
+
+## PC simulation and local classifier
+
+Run the co-located plant and edge classifier without MATLAB, network
+connectivity, or a replay file:
+
+```bash
+python -m pi.app --local --scenario A --change-type step --t-start 30
+python -m pi.app --local --scenario B --change-type ramp --t-start 0
+```
+
+Supported scenarios are `nominal`, `A` (rear ballast), `B` (front tire
+stiffness), and `AB`. Changes can be `constant`, `step`, or `ramp`; use
+`--reverse` for changed-to-nominal runs, `--noise-seed` for deterministic
+sensor noise, and `--realtime` to pace samples at 100 Hz. The detector uses
+a bounded history sized for its feature windows and reports each turn verdict
+with its confidence, timestamp, and regression outputs.
+
+Measure local throughput and peak Python memory with:
+
+```bash
+python -m pi.benchmark_local_demo --scenario A --change-type step
+```
+
+## PC event simulation
+
+The PC-side event runner uses the same training-represented parameter changes
+as the Pi detector: `implement_attached` is Scenario A (added mass and CG
+shift), and `tire_flat` is Scenario B (reduced effective front stiffness).
+Events can be combined and can use a step or ramp interval:
+
+```bash
+python -m pi.visualize_demo \
+  --event implement_attached:30 \
+  --event tire_flat:100:102 \
+  --save data/python_event_demo.png \
+  --capture data/python_event_demo.ndjson
+```
+
+The figure shows the generated path, the three edge channels sent to the Pi,
+plant outputs, effective mass, and shaded event intervals. The capture uses
+the same framed transport format as separated mode and can be replayed with:
+
+```bash
+python -m pi.app --transport-file data/python_event_demo.ndjson --status-interval 0
+```
+
+To send the same generated stream directly to a Pi, start the Pi receiver and
+add `--tcp-host <PI_IP> --tcp-port 8765` to the visualization command.
+
+## PC-to-Pi streaming
+
+The PC is the TCP client and sends measured `[delta, Vx, r]` samples. The Pi is
+the TCP server/listener and runs the detector and classifier. Start the Pi
+listener first:
+
+```bash
+python -m pi.app --tcp-listen 0.0.0.0:8765 --realtime
+```
+
+Then start the PC simulation client:
+
+```bash
+python -m pi.interactive_demo --tcp-host <PI_IP>
+```
+
+The controls can start, pause, resume, reset, and stop the run, attach/remove
+the implement event, or flatten/repair the tire event. Add `--capture
+data/interactive.ndjson` to save the exact stream for later replay; the
+corresponding command log is written to `data/interactive.events.json`. Use
+`--accelerated` for a fast local smoke test without realtime pacing.
+
+### Step-by-step MATLAB demo A
+
+1. On the PC, generate the MATLAB playback files:
+
+   ```matlab
+   addpath(pwd); addpath('scripts');
+   export_demo_playback_trajectories
+   ```
+
+   Confirm that `data/generated_trajectories/matlab/demo_a.mat` exists.
+
+2. On the Pi, install the runtime once:
+
+   ```bash
+   cd ~/hack-26
+   python3 -m venv .venv
+   source .venv/bin/activate
+   python -m pip install numpy scipy
+   ```
+
+3. Copy or update `models/export/weights.mat` and the repository runtime on
+   the Pi. Verify the checkout:
+
+   ```bash
+   git status --short --branch
+   git log -1 --oneline
+   ```
+
+4. Start the Pi listener before starting playback:
+
+   ```bash
+   python -m pi.app \
+     --tcp-listen 0.0.0.0:8765 \
+     --realtime \
+     --status-interval 0.5
+   ```
+
+   The command waits for the PC connection. It is normal for the terminal to
+   remain quiet until playback begins.
+
+5. On the PC, start the Streamlit UI:
+
+   ```bash
+   python -m pip install -r requirements-pc-ui.txt
+   streamlit run pi/streamlit_app.py
+   ```
+
+6. In Streamlit, select `MATLAB demo A`, enter the Pi hostname or IP address
+   in `Pi host`, set `Pi port` to `8765`, leave playback at `1x`, and click
+   `Start`.
+
+7. On the Pi, expect connection/status lines followed by classifier verdicts.
+   The Pi performs inference; the PC only generates and sends the measured
+   stream. The first run should be performed at `1x` before trying faster
+   playback.
+
+To verify the listener from another Pi terminal:
+
+```bash
+ss -ltnp | grep ':8765'
+ss -tnp | grep ':8765'
+```
+
+If the port is occupied, identify the stale process and stop it before
+restarting the listener:
+
+```bash
+ps -ef | grep '[p]i.app'
+kill <PID>
+```
+
+### Streamlit PC UI
+
+```bash
+python -m pip install -r requirements-pc-ui.txt
+streamlit run pi/streamlit_app.py
+```
+
+Open the local URL shown by Streamlit, normally `http://localhost:8501`.
+The Streamlit UI supports Python and generated MATLAB trajectory selection,
+0.1x–20x playback, playback controls, event commands, Pi TCP output, capture,
+and live plots. The Raspberry Pi does not need Streamlit or Plotly.
+
+The `Trajectory` dropdown includes the Python default and any MATLAB
+trajectories stored under `data/generated_trajectories/matlab/`. Selecting a
+MATLAB trajectory streams its fixed `[delta, Vx, r]` playback; runtime event
+buttons are disabled for fixed replay files.
+
+The MATLAB demo trajectories for the trained scenarios A, B, and AB can be
+regenerated with:
+
+```matlab
+addpath(pwd); addpath('scripts');
+export_demo_playback_trajectories
+```
+
+They appear in the Streamlit selector as `MATLAB demo A`, `MATLAB
+demo B`, and `MATLAB demo AB`. These files contain the noisy measured edge
+signals, plant path diagnostics, and scenario metadata. To replay one to the
+Pi, configure the Pi host and port in Streamlit and select the desired demo; only
+`[delta, Vx, r]` is sent over the Pi contract.
+
+Run the host-side verification suite with:
+
+```bash
+python -m pi.verify_phase5
+```
+
+If classifier parity fails while the plant and transport checks pass, regenerate
+the MATLAB probability and detector fixtures after exporting the final
+`models/export/weights.mat`. The PC and Pi must use the same weights and
+fixtures; the TCP transport does not retrain or alter the model.
+
+## Replay and parity validation
+
+Generate MATLAB references after changing the detector, selected features, or
+exported weights:
+
+```matlab
+addpath(pwd); addpath('scripts');
+export_phase3_replay_vectors
+```
+
+This writes `pi/test_vectors/detector_nominal.mat`, `detector_A.mat`,
+`detector_B.mat`, `detector_AB.mat`, `detector_step.mat`, and
+`detector_ramp.mat`. The fixtures contain measured `[delta, Vx, r]` samples,
+selected features, per-turn model outputs, and the MATLAB streaming verdict
+sequence. `ay` and plant truth remain diagnostics only.
+
+Run the complete package-safe Pi validation suite with:
+
+```bash
+python -m unittest discover -s pi -p "test_*.py"
+python pi/test_plant_parity.py
+```
+
+To validate the stateful streaming plant and detector replay together, run:
+
+```bash
+python -m pi.validate_streaming
+```
+
+This compares the one-sample streaming plant against the fixed
+MATLAB/Simulink `plant_run.mat` reference, then replays the nominal, A, B,
+AB, step, and ramp detector fixtures. It validates implementation parity;
+held-out model accuracy and nominal false-positive rates still require a
+separate dataset evaluation.
+
+Feature parity uses relative tolerance `1e-6`; model and aggregated verdict
+parity use relative tolerance `1e-5` and absolute tolerance `1e-8`.
 
 ## Quickstart (MATLAB)
 
@@ -53,7 +321,12 @@ r   = load('data/runs/run_00001.mat');             % r.tt (timetable) and r.meta
 tt  = change_detector.addSensorNoise(r.tt, [], 42);   % adds deltaMeas, VxMeas, rMeas, ayMeas
 ```
 
-Measured signals the classifier may use: `deltaMeas` (front wheel angle), `VxMeas` (speed), `rMeas` (gyro yaw rate), `ayMeas` (lateral acceleration at the IMU). The clean columns (`delta`, `Vx`, `r`, `ay`) and the model states (`ydot`, `alphaF`, `X`, `Y`, `psi`) are for analysis only, they are not available on the tractor.
+Measured signals in the deployable classifier contract: `deltaMeas` (front
+wheel angle), `VxMeas` (speed), and `rMeas` (gyro yaw rate). `ayMeas` remains
+available for exploratory MATLAB features and diagnostics, but is optional and
+not required by the Pi edge pipeline. The clean columns (`delta`, `Vx`, `r`,
+`ay`) and model states (`ydot`, `alphaF`, `X`, `Y`, `psi`) are for analysis
+only; they are not available on the tractor edge contract.
 
 Labels:
 
@@ -209,70 +482,6 @@ S = load('data/features.mat');
 X18 = S.F.X(:, cols);
 ```
 
-## Training and exported weights (H2)
-
-```matlab
-train_models            % fitcnet classifier + 2 fitrnet regressors on the 18 features -> models/trained.mat (about 1 min)
-export_weights          % -> models/export/weights.mat and forward-pass check (PASS)
-evaluate_models         % H3: test split and drift runs -> data/results/h3_test.png, h3_demo.png
-run_demo_replay         % demo scenarios A, B, AB (6 swaths, change after turn 2) through the full detector
-                        % -> data/results/demo_<name>.png, pi/test_vectors/detector_<name>.mat
-```
-
-`models/export/weights.mat` is all the Simulink model and the Pi need: `mu`, `sigma`, `featureNames` (18, comma-separated), `classNames` (`nominal,A,B,AB`), classifier `W1 b1 W2 b2 W3 b3`, regressor `V1 c1 V2 c2 V3 c3` with outputs `[dm kg; kf]`. Evaluate it with `change_detector.mlpForward(X, W)`, where `X` holds the raw features in the order of `featureNames`. Report `dm` only if the class contains A, `kf` only if it contains B. Validation results are in `plan.md`, H2.
-
-### How a prediction is made
-
-Each detected turn is processed on its own; the results of the last 3 turns are then combined into the verdict. No if-then rules are written by hand: all combinations of features are learned weights.
-
-```mermaid
-flowchart LR
-  T["One detected turn<br/>(window + preceding straight)"] --> F["turnFeatures:<br/>35 numbers"]
-  F --> S["select 18<br/>(selectedFeatureNames)"]
-  S --> Z["standardise<br/>z = (x − μ) / σ"]
-  Z --> C["Classifier 18→16→8→4<br/>ReLU, softmax"]
-  Z --> R["Regressor 18→32→16→2<br/>(dm net + kf net)"]
-  C --> P["P = [p_nominal, p_A, p_B, p_AB]"]
-  R --> M["Δm [kg], k_f"]
-  P --> V["aggregateVerdict<br/>last 3 turns"]
-  M --> V
-  V --> O["class, Δm, k_f"]
-```
-
-1. **Features:** `turnFeatures` computes 35 numbers per turn; the 18 in `selectedFeatureNames` are used. They need only $\delta$, $V_x$ and $r$.
-2. **Standardise:** $z = (x - \mu)/\sigma$ with the training mean and standard deviation. All features then have a similar scale (about −2 to +2), so units such as m/s versus log power don't bias the weights.
-3. **Classifier** (small neural network, 476 parameters):
-   - Layer 1 has 16 neurons. Each computes a weighted sum of all 18 standardised features plus an offset, and negative results are set to 0 (ReLU): $h_{1,i} = \max(0, \sum_j W_{1,ij} z_j + b_{1,i})$. Each neuron is a learned combination, for example "power at 1.5–3 Hz low and wobble frequency normal" (typical for rear ballast) or "power at 0.6–1 Hz high and frequency low" (softer front tires).
-   - Layer 2 combines these 16 signals into 8 in the same way.
-   - The output layer gives 4 scores, turned into probabilities that sum to 1 (softmax).
-   - The weights were learned from the training turns, with regularisation keeping them small to avoid overfitting.
-4. **Regressors:** two separate small networks (18→16→8→1) on the same inputs. One estimates $\Delta m$ and was trained only on turns with ballast; the other estimates $k_f$ and was trained only on turns with a tire change. For export they are stacked side by side into one network with 2 outputs; they don't interact.
-5. **Verdict** (`aggregateVerdict`, after each new turn, over the last 3 turns):
-   - **Class:** the mean of the 3 probability vectors, then the most likely class. One uncertain turn can't flip the verdict.
-   - **$\Delta m$ and $k_f$:** the median of the 3 per-turn estimates, reported only if the class contains that change (otherwise $\Delta m$ = 0, $k_f$ = 1). Without ballast the $\Delta m$ network still outputs about 400 kg, which is why this gating matters.
-
-On the Pi the whole chain after the features is a few matrix multiplications per turn: `change_detector.mlpForward` in MATLAB, `pi/model.py` in Python.
-
-## Streaming detector and Simulink demo (H4)
-
-```matlab
-test_detector_stream    % System object fed sample by sample vs the offline reference (PASS for A, B, AB)
-run_demo('A')           % Simulink demo, live: plant + sensor noise + detector (also 'B', 'AB')
-run_demo('A', 'replay') % same, fed with the stored measured signals of pi/test_vectors/detector_A.mat
-```
-
-- `change_detector.StreamingDetector` is the online detector (a System object). Create it with `det = change_detector.StreamingDetector('W', W)`, then call `[cls, p, dm, kf, clsTurn, newVerdict] = det([delta Vx r ay])` once per sample at 100 Hz.
-  - It keeps a 150 s ring buffer and runs the same turn trigger as `findTurns`.
-  - 5 s after each turn exit it computes the features, runs the networks and updates the verdict over the last 3 turns (`newVerdict` = 1 on that sample).
-- `models/tractor_change_detection.slx` is the Simulink demo:
-  - Plant subsystem, driven by the maneuver.
-  - Additive sensor noise.
-  - Source switch: live or replay (`useReplay`).
-  - Zero-order hold at 100 Hz.
-  - `ChangeDetector`, a MATLAB System block using `StreamingDetector`, Interpreted execution.
-  - Dashboard: displays for the verdict class, $\Delta m$, $k_f$ and the latest single-turn class; verdict scope; XY path; measured vs kinematic yaw rate.
-  - All variables are set by `scripts/run_demo.m`. The demo scenarios come from `change_detector.demoScenario`: 6 swaths, change after turn 2.
-
 ## Raspberry Pi
 
 `pi/plant.py` is a line-by-line Python port of the plant. On the Pi:
@@ -286,19 +495,12 @@ Regenerate the test vector after any change to the plant: run `scripts/export_pi
 
 Test vectors for porting the turn trigger and features (`pi/features.py`): `pi/test_vectors/features_<class>.mat`, one validation run per class (nominal, A, B, AB) written by `scripts/export_feature_test_vectors.m`. Each file holds the measured signals of the whole run, the `findTurns` result, the window and straight row ranges, the expected 35 features per turn, the indices of the 18 selected features, and all filter coefficients. Indices are 1-based (MATLAB); subtract 1 in Python. The header of the script lists all fields.
 
-Test vector for the forward pass (`pi/model.py`): `pi/test_vectors/model_forward.mat`, written by `scripts/export_weights.m`. It contains 100 raw feature rows `X` (18 columns, order `featureNames`) and the expected outputs `P` (4 class probabilities, order `classNames`), `dm` [kg] and `kf`, computed with `models/export/weights.mat`.
-
-Reference for the whole streaming detector (Simulink and `pi/app.py`): `pi/test_vectors/detector_{A,B,AB}.mat`, written by `scripts/run_demo_replay.m` from the demo scenarios in `change_detector.demoScenario`. Each file holds the measured signals of the run and, per detected turn, the trigger indices, the sample at which the verdict is due (`iVerdict`), the features, the model outputs, the verdict over the last 3 turns (`aggregateVerdict`) and the truth. Fields are listed in `plan.md`, contract 5.
-
-Demo inputs for `pi/app.py`: `pi/scenarios/scenario_{A,B,AB}.mat`, written by `scripts/export_pi_scenarios.m`. They hold the maneuver and disturbance (inputs of `plant.simulate`), the plant parameters before and after the change, the change time, the true change, and the MATLAB sensor noise (`noise`, N × 4, additive). Plant output plus `noise` reproduces the measured signals of `detector_<name>.mat`. The full Pi work list is in `plan.md`, H5.
-
 ## Layout
 
 ```
 +change_detector/   MATLAB package: parameters, scenarios, maneuver, disturbance, plant wrapper, dataset, sensor noise,
                     turn trigger, windows, features
-models/             tractor_plant.slx (Simulink plant, fixed-step ode4, 0.01 s), tractor_change_detection.slx (demo with
-                    streaming detector), trained.mat, export/weights.mat
+models/             tractor_plant.slx (Simulink plant, fixed-step ode4, 0.01 s)
 scripts/            checks, dataset generation, features (build, explore, select, plot_run), test vector export
 data/               index.mat, config.mat, features.mat, results/, runs/ (large files are not in git)
 pi/                 Python port for the Raspberry Pi, parity tests, test_vectors/

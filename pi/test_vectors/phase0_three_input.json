@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "units_version": 1,
+  "feature_version": 1,
+  "model_version": 0,
+  "sample_rate_hz": 100,
+  "sample_period_s": 0.01,
+  "channel_order": ["delta", "Vx", "r"],
+  "timestamp_origin": "stream_start",
+  "source": "phase0_contract_fixture",
+  "seed": 7,
+  "samples": [
+    {"schema_version": 1, "timestamp_s": 0.00, "sequence": 0, "delta": 0.000, "Vx": 4.17, "r": 0.000, "diagnostics": {"ay": 0.0, "label": "nominal"}},
+    {"schema_version": 1, "timestamp_s": 0.01, "sequence": 1, "delta": 0.005, "Vx": 4.17, "r": 0.002, "diagnostics": {"ay": 0.01, "label": "nominal"}},
+    {"schema_version": 1, "timestamp_s": 0.02, "sequence": 2, "delta": 0.010, "Vx": 4.16, "r": 0.004, "diagnostics": {"ay": 0.02, "label": "nominal"}},
+    {"schema_version": 1, "timestamp_s": 0.03, "sequence": 3, "delta": 0.015, "Vx": 4.16, "r": 0.006, "diagnostics": {"ay": 0.03, "label": "nominal"}},
+    {"schema_version": 1, "timestamp_s": 0.04, "sequence": 4, "delta": 0.020, "Vx": 4.15, "r": 0.008, "diagnostics": {"ay": 0.04, "label": "nominal"}}
+  ],
+  "expected_features": null,
+  "expected_verdicts": null
+}

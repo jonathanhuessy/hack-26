@@ -46,13 +46,14 @@ def run(
     tcp_listen: tuple[str, int] | None = None,
     transport_file: str | Path | None = None,
     status_interval_s: float = 0.5,
+    tcp_reconnect: bool = True,
 ) -> int:
     default_weights = Path(__file__).resolve().parents[1] / "models" / "export" / "weights.mat"
     weight_path = Path(weights) if weights else (default_weights if default_weights.exists() else None)
     model = load_weights(weight_path) if weight_path else dummy_model()
     if tcp_listen:
         host, port = tcp_listen
-        source = TcpSampleSource(TcpConfig(host=host, port=port, reconnect=True))
+        source = TcpSampleSource(TcpConfig(host=host, port=port, reconnect=tcp_reconnect))
         source_name = f"tcp://{host}:{port}"
     elif transport_file:
         source = FileSampleSource(transport_file, realtime=realtime)
@@ -77,11 +78,17 @@ def run(
     detector = TurnDetector(model)
     pipeline = EdgePipeline(detector, ExecutionConfig(realtime=realtime))
     events = []
+    printed_verdict_ids: set[str] = set()
     started_at = time.monotonic()
     last_status_at = started_at
     for sample in source:
         event = pipeline.push(sample)
         events.append(event)
+        consumer_result = event.consumer_result
+        verdict = getattr(consumer_result, "new_verdict", None)
+        if verdict is not None and verdict.window_id not in printed_verdict_ids:
+            _print_verdict(verdict)
+            printed_verdict_ids.add(verdict.window_id)
         now = time.monotonic()
         if status_interval_s > 0 and now - last_status_at >= status_interval_s:
             age = max(0.0, now - started_at - sample.timestamp_s)
@@ -98,17 +105,14 @@ def run(
                 if event.consumer_result is not None and event.consumer_result.new_verdict is not None]
     if flushed is not None and getattr(flushed, "new_verdict", None) is not None:
         verdicts.append(flushed.new_verdict)
+    for verdict in verdicts:
+        if verdict.window_id not in printed_verdict_ids:
+            _print_verdict(verdict)
+            printed_verdict_ids.add(verdict.window_id)
     print(
         f"source={source_name} mode={_source_mode(source_name)} "
         f"realtime={realtime} samples={accepted} rejected={rejected}"
     )
-    for verdict in verdicts:
-        print(
-            f"{verdict.window_id}: class={verdict.class_name} "
-            f"confidence={max(verdict.class_probabilities):.3f} "
-            f"delta_m_kg={verdict.delta_m_kg} k_f={verdict.k_f} "
-            f"t={verdict.timestamp_s:.2f}s"
-        )
     print(f"processed {len(events)} samples, {len(verdicts)} verdicts")
     print(f"detector_state={detector.state.value}")
     statuses = getattr(source, "statuses", ())
@@ -123,6 +127,15 @@ def _source_mode(source_name: str) -> str:
     if source_name.startswith("local/"):
         return "co-located"
     return "replay"
+
+
+def _print_verdict(verdict) -> None:
+    print(
+        f"{verdict.window_id}: class={verdict.class_name} "
+        f"confidence={max(verdict.class_probabilities):.3f} "
+        f"delta_m_kg={verdict.delta_m_kg} k_f={verdict.k_f} "
+        f"t={verdict.timestamp_s:.2f}s"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -149,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         "--tcp-listen",
         metavar="HOST:PORT",
         help="receive a separated PC stream over TCP",
+    )
+    parser.add_argument(
+        "--tcp-no-reconnect",
+        action="store_true",
+        help="exit after one finite TCP stream instead of waiting for reconnect",
     )
     parser.add_argument(
         "--transport-file",
@@ -179,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         tcp_listen=tcp_listen,
         transport_file=args.transport_file,
         status_interval_s=args.status_interval,
+        tcp_reconnect=not args.tcp_no_reconnect,
     )
 
 

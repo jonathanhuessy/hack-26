@@ -238,8 +238,10 @@ Rules: train only in MATLAB. Simulink and Python never see the dataset files for
 1. **Window:** one window per turn, from 5 s before turn entry to 5 s after turn exit, as 4 columns of measured signals `[deltaMeas VxMeas rMeas ayMeas]` at 100 Hz, plus the preceding straight (the last 20 s before the window, speed above 3 m/s). Turn entry: $|\delta|$ (low-passed at 1 Hz) rises above 5°. Turn exit: it falls below 3° (hysteresis). Only measured signals are used, never `segment` or any label.
 2. **Feature function:** `x = change_detector.turnFeatures(win, straight, fs)` returns a row vector, and `change_detector.turnFeatureNames()` its names in a fixed order. Only basic operations (filter with fixed coefficients, sums, max, explicit cross-correlation), so the Python port is line-by-line.
 3. **Weights file** `models/export/weights.mat`: `mu`, `sigma` (feature normalisation), `featureNames`, classifier `W1 b1 W2 b2 W3 b3` and regressor `V1 c1 V2 c2 V3 c3` (ReLU hidden layers, softmax on the classifier), `classNames`. A linear model is the same file with a single layer. As built in H2: matrices act on column vectors ($h_1 = \mathrm{relu}(W_1 z + b_1)$, $z = (x - \mu)/\sigma$), `featureNames` and `classNames` are comma-separated strings, and the regressor outputs `[dm in kg; kf]`. Reference implementation: `change_detector.mlpForward`.
-4. **Streaming detector:** `[out, newVerdict] = change_detector.detectorStep(u, W)` with `u = [delta Vx r ay]` for one sample, internal state in `persistent` variables. When a turn ends it computes features and the model outputs and sets `newVerdict`. `out` holds the last class probabilities (4), the regression outputs ($\Delta m$, $k_f$) and the median over the last K = 3 turns. The offline `findTurns` must use exactly the same trigger thresholds.
-5. **Test vectors** `pi/test_vectors/detector_<class>.mat`: measured inputs of one run, plus expected feature vectors, probabilities, regression outputs and verdicts per turn.
+4. **Streaming detector:** `[out, newVerdict] = change_detector.detectorStep(u, W)` with `u = [delta Vx r ay]` for one sample, internal state in `persistent` variables. When a turn ends it computes features and the model outputs and sets `newVerdict`. `out` holds the last class probabilities (4), the regression outputs ($\Delta m$, $k_f$) and the median over the last K = 3 turns. The offline `findTurns` must use exactly the same trigger thresholds. Verdict rule as built in H3: `change_detector.aggregateVerdict` (class = argmax of the mean probabilities of the last K turns, magnitudes = median, gated by the class).
+5. **Test vectors** `pi/test_vectors/detector_<class>.mat`: measured inputs of one run, plus expected feature vectors, probabilities, regression outputs and verdicts per turn. As built in H3: `detector_A.mat`, `detector_B.mat`, `detector_AB.mat` from `scripts/run_demo_replay.m`. Fields:
+   - `meas` (N × 4 `[delta Vx r ay]`), `fs`;
+   - per turn: `iEntry`, `iExit`, `iVerdict` (sample at which the window ends and the verdict is due, 1-based), `X` (35 features), `selectedIdx`, `P`, `dmTurn`, `kfTurn`, `clsTurn`, `clsVerdict`, `pVerdict`, `dmVerdict`, `kfVerdict`, and the truth `clsTrue`, `dmTrue`, `kfTrue`.
 
 ### Parallel tracks
 
@@ -366,6 +368,47 @@ On the test split, in `scripts/evaluate_models.m`:
 - Magnitude errors: $|\Delta m|$ MAE and $|k_f|$ MAE.
 - On the demo runs: detection delay in turns after a step, and the tracking of $\Delta m$ over turns for the drift runs.
 - Save the figures to `data/results/` for the pitch.
+- **Status: done.**
+  - Code: `scripts/evaluate_models.m` (uses `weights.mat` through `mlpForward`, i.e. the deployed maths), `change_detector.aggregateVerdict` (shared verdict rule: class = argmax of the mean probabilities of the last K = 3 turns; $\Delta m$ and $k_f$ = median over those turns, gated by the class). Figures: `data/results/h3_test.png`, `data/results/h3_demo.png`.
+  - **Test split** (200 runs, 600 turns, never used for training or tuning):
+
+    | Metric | Per turn | Per run (3 turns) |
+    |---|---|---|
+    | Accuracy, 4 classes | 0.82 | **0.90** |
+    | "Something changed" yes/no | 0.89 | 0.94 |
+    | False alarms (nominal flagged as changed) | 0.15 | **0.00** (0 of 50 runs) |
+    | Missed changes (changed run called nominal) | | 0.09 |
+
+    Recall per run: nominal 1.00, A 0.78, B 0.92, A+B 0.90. Test results match validation (0.88 per run), so there is no sign of overfitting to the validation split.
+  - **Magnitudes on test:**
+    - $\Delta m$: MAE 218 kg (true class given), 231 kg when gated by the predicted class (A detected in 87 of 100 runs).
+    - $k_f$: MAE 0.027 (true class given), 0.026 gated (B detected in 94 of 100 runs).
+    - Ballast detection depends on size: 250–500 kg detected in 5 of 12 runs, 500–1000 kg in 20 of 26, from 1000 kg in 62 of 62.
+  - **Demo runs (step and drift):** the runs have only 3 turns, so after a step there are just 1–2 turns left.
+    - On the first turn after the change, the single-turn class is right in 12 of 15 step runs. The aggregated verdict over K = 3 turns is right in only 7 of 15, because it still averages pre-change turns.
+    - Trade-off by K on the test split:
+
+      | K | Verdict accuracy after the last turn | False alarms per verdict | Step runs right on the first turn after the change |
+      |---|---|---|---|
+      | 1 | 0.85 | 0.15 | 12/15 |
+      | 2 | 0.89 | 0.09 | 10/15 |
+      | 3 | 0.90 | 0.08 | 7/15 |
+
+    - Drift runs (tank draining or filling, $\Delta m$ ≤ 1600 kg over 3 turns) are tracked only roughly. Most values are near the detection limit, and a per-turn estimate has an error of about 250 kg.
+  - **Consequences for H4/H5:**
+    - Keep K = 3 for the verdict, but also show the latest single-turn class on the dashboard.
+    - Design the live demo with a large change (≥ 1000 kg, or $k_f$ ≤ 0.75) and at least 3 turns after the change, e.g. 6 swaths with the change before swath 3.
+    - The regressor outputs about 400 kg when there is no ballast (it was trained only on runs with A), so always gate it.
+  - **Demo scenario and offline replay (done, prepared for H4/H5):**
+    - `change_detector.demoScenario(name)` defines the fixed demo: 6 swaths (fixed seed), nominal for turns 1–2, then a step change after turn 2. Variants: `'A'` +1500 kg on the rear hitch, `'B'` $k_f$ = 0.7, `'AB'` both.
+    - `scripts/run_demo_replay.m` runs each variant offline through the full detector: simulate, sensor noise (seed 777), `findTurns`, `turnFeatures`, `mlpForward`, `aggregateVerdict` with K = 3.
+    - It writes the pitch figures `data/results/demo_<name>.png` (path with turn numbers; class, $\Delta m$ and $k_f$ per turn, with truth in black and the estimates in colour) and the detector references `pi/test_vectors/detector_<name>.mat` (contract 5).
+    - Result, identical pattern in all three variants:
+      - Turns 1–2 are nominal and correct.
+      - Turn 3 is the first turn after the change. The single-turn class is already right, while the verdict still says nominal (2 of 3 turns are old).
+      - From turn 4 the verdict is right.
+      - $\Delta m$ verdict 1302 → 1425 → 1505 kg (truth 1500); $k_f$ verdict 0.75 → 0.73 → 0.71 (truth 0.70).
+    - `data/results/h3_demo.png` now shows only the drift runs (truth dashed, estimate solid); the unreadable step-run plot was replaced by the demo figures.
 
 ### H4. Streaming detector and Simulink demo (Track B)
 - **MATLAB first:** `change_detector.detectorStep` (contract 4) as a plain MATLAB function with persistent state: ring buffer, trigger state machine, `turnFeatures`, `mlpForward`, median over the last K turns. Test it in a loop over one demo run (`scripts/test_detector_stream.m`): it must give the same features and verdicts as the offline path (H1) on the same measured signals. Track B can write the buffer, trigger and verdict logic before `turnFeatures` exists, with a stub that returns zeros.

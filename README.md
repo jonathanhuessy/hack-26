@@ -6,7 +6,7 @@ The full design, decisions and progress checklist are in [plan.md](plan.md). Rea
 
 ## Status
 
-Preparation phase (simulator, labelled raw dataset): done, see the checklist in `plan.md`. Hackathon day: H1 (turn detection and features) and H2 (training, exported weights) are done; evaluation, the Simulink inference model and the Pi demo are in progress.
+Preparation phase (simulator, labelled raw dataset): done, see the checklist in `plan.md`. Hackathon day: H1 (turn detection and features), H2 (training, exported weights) and H3 (evaluation: 90 % per run on the test split, no false alarms) are done; the Simulink inference model and the Pi demo are in progress.
 
 ## Requirements
 
@@ -214,6 +214,9 @@ X18 = S.F.X(:, cols);
 ```matlab
 train_models            % fitcnet classifier + 2 fitrnet regressors on the 18 features -> models/trained.mat (about 1 min)
 export_weights          % -> models/export/weights.mat and forward-pass check (PASS)
+evaluate_models         % H3: test split and drift runs -> data/results/h3_test.png, h3_demo.png
+run_demo_replay         % demo scenarios A, B, AB (6 swaths, change after turn 2) through the full detector
+                        % -> data/results/demo_<name>.png, pi/test_vectors/detector_<name>.mat
 ```
 
 `models/export/weights.mat` is all the Simulink model and the Pi need: `mu`, `sigma`, `featureNames` (18, comma-separated), `classNames` (`nominal,A,B,AB`), classifier `W1 b1 W2 b2 W3 b3`, regressor `V1 c1 V2 c2 V3 c3` with outputs `[dm kg; kf]`. Evaluate it with `change_detector.mlpForward(X, W)`, where `X` holds the raw features in the order of `featureNames`. Report `dm` only if the class contains A, `kf` only if it contains B. Validation results are in `plan.md`, H2.
@@ -232,6 +235,8 @@ Regenerate the test vector after any change to the plant: run `scripts/export_pi
 Test vectors for porting the turn trigger and features (`pi/features.py`): `pi/test_vectors/features_<class>.mat`, one validation run per class (nominal, A, B, AB) written by `scripts/export_feature_test_vectors.m`. Each file holds the measured signals of the whole run, the `findTurns` result, the window and straight row ranges, the expected 35 features per turn, the indices of the 18 selected features, and all filter coefficients. Indices are 1-based (MATLAB); subtract 1 in Python. The header of the script lists all fields.
 
 Test vector for the forward pass (`pi/model.py`): `pi/test_vectors/model_forward.mat`, written by `scripts/export_weights.m`. It contains 100 raw feature rows `X` (18 columns, order `featureNames`) and the expected outputs `P` (4 class probabilities, order `classNames`), `dm` [kg] and `kf`, computed with `models/export/weights.mat`.
+
+Reference for the whole streaming detector (Simulink and `pi/app.py`): `pi/test_vectors/detector_{A,B,AB}.mat`, written by `scripts/run_demo_replay.m` from the demo scenarios in `change_detector.demoScenario`. Each file holds the measured signals of the run and, per detected turn, the trigger indices, the sample at which the verdict is due (`iVerdict`), the features, the model outputs, the verdict over the last 3 turns (`aggregateVerdict`) and the truth. Fields are listed in `plan.md`, contract 5.
 
 ## Layout
 

@@ -421,6 +421,67 @@ data/interactive.ndjson` to save the exact stream for later replay; the
 corresponding command log is written to `data/interactive.events.json`. Use
 `--accelerated` for a fast local smoke test without realtime pacing.
 
+### Dedicated PC-to-Pi Ethernet link
+
+The direct stream already uses TCP: the Pi listens on port `8765`, and the PC
+connects as the sender. A dedicated Ethernet cable does not require a new wire
+protocol; configure both Ethernet interfaces with addresses on the same
+private subnet.
+
+For example, use `192.168.50.1/24` on the PC and `192.168.50.2/24` on the
+Pi. Do not configure a default gateway on this dedicated link.
+
+On Windows, set the PC Ethernet adapter's IPv4 address and subnet mask to:
+
+```text
+IP address:    192.168.50.1
+Subnet mask:   255.255.255.0
+Default gateway: leave blank
+```
+
+On Raspberry Pi OS with NetworkManager, identify the wired connection and set
+its address:
+
+```bash
+nmcli connection show
+sudo nmcli connection modify "<wired-connection>" \
+  ipv4.method manual \
+  ipv4.addresses 192.168.50.2/24 \
+  ipv4.never-default yes
+sudo nmcli connection up "<wired-connection>"
+```
+
+Verify the link before starting playback:
+
+```powershell
+ping 192.168.50.2
+Test-NetConnection 192.168.50.2 -Port 8765
+```
+
+On the Pi, start the LCD-enabled listener:
+
+```bash
+cd ~/hack-26
+source .venv/bin/activate
+python -m pi.app \
+  --tcp-listen 0.0.0.0:8765 \
+  --realtime \
+  --lcd \
+  --status-interval 0.5
+```
+
+In Streamlit, enter `192.168.50.2` as `Pi host or IP`, keep port `8765`,
+select the MATLAB playback, and click `Start streaming`. Begin at `1x`.
+The Streamlit sidebar reports the connection state and any handshake or
+disconnect error. Only `[delta, Vx, r]` crosses the Ethernet link; the Pi
+performs detection and updates the LCD locally.
+
+If the Pi firewall is enabled, allow the listener:
+
+```bash
+sudo ufw allow 8765/tcp
+```
+
 ### Step-by-step MATLAB demo A
 
 1. On the PC, generate the MATLAB playback files:

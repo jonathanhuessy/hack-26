@@ -141,6 +141,17 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(received, expected)
         self.assertTrue(any(status.kind == "handshake" for status in receiver.statuses))
 
+    def test_tcp_sender_reports_connection_failure(self):
+        receiver = TcpSampleSource(TcpConfig(host="127.0.0.1", port=0))
+        receiver.start()
+        host, port = receiver.address
+        receiver.close()
+
+        sender = TcpSampleSender(host, port, timeout_s=0.2)
+        with self.assertRaises(ConnectionError):
+            sender.send(samples(1)[0])
+        self.assertEqual(sender.statuses[-1].kind, "disconnected")
+
 
 if __name__ == "__main__":
     unittest.main()

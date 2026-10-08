@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import queue
+import threading
 from typing import Any
 
 import numpy as np
@@ -45,11 +46,130 @@ MAX_DISPLAY_SAMPLES = 5000
 MAX_PLOT_POINTS = 600
 MAX_UI_BATCH = 128
 LIVE_UPDATE_SECONDS = 0.5
+TRANSPORT_QUEUE_SIZE = 512
 PATH_COLORS = {
     DetectorState.IDLE.value: "#1f77b4",
     DetectorState.IN_TURN.value: "#ff7f0e",
     DetectorState.WAITING_WINDOW.value: "#d62728",
 }
+PATH_LABELS = {
+    DetectorState.IDLE.value: "Straight / No Turn",
+    DetectorState.IN_TURN.value: "Turning",
+    DetectorState.WAITING_WINDOW.value: "Analyzing Turn",
+}
+
+
+class AsyncTcpTransport:
+    """Send samples on a dedicated thread without blocking the producer."""
+
+    def __init__(self, host: str, port: int, *, queue_size: int = TRANSPORT_QUEUE_SIZE):
+        self.sender = TcpSampleSender(host, port)
+        self._queue: queue.Queue = queue.Queue(maxsize=queue_size)
+        self._sentinel = object()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.error: Exception | None = None
+        self.state = "Not connected"
+        self.message = f"Ready for {host}:{port}"
+        self.enqueued_samples = 0
+        self.sent_samples = 0
+        self.last_sent_sequence: int | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def queue_depth(self) -> int:
+        return self._queue.qsize()
+
+    def start(self) -> None:
+        if self.running:
+            return
+        self._stop.clear()
+        self.error = None
+        self.state = "Connecting"
+        self.message = f"Connecting to {self.sender.host}:{self.sender.port}"
+        self._thread = threading.Thread(
+            target=self._run,
+            name="tcp-sample-sender",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def send(self, sample) -> None:
+        if self.error is not None:
+            raise ConnectionError(self.message) from self.error
+        if self._stop.is_set():
+            raise ConnectionError("TCP transport is stopped")
+        try:
+            self._queue.put(sample, timeout=self.sender.timeout_s)
+        except queue.Full as exc:
+            self._fail("TCP transport queue is full; Pi is not keeping up", exc)
+            raise ConnectionError(self.message) from exc
+        self.enqueued_samples += 1
+
+    def finish(self) -> None:
+        if self._thread is None:
+            self.close()
+            return
+        if self.error is None and not self._stop.is_set():
+            try:
+                self._queue.put(self._sentinel, timeout=self.sender.timeout_s)
+            except queue.Full as exc:
+                self._fail("TCP transport could not drain before completion", exc)
+        self._thread.join(timeout=self.sender.timeout_s + 1.0)
+        if self._thread.is_alive():
+            self._fail("TCP sender thread did not stop", TimeoutError(self.message))
+        self.close()
+
+    def close(self) -> None:
+        self._stop.set()
+        try:
+            self._queue.put_nowait(self._sentinel)
+        except queue.Full:
+            pass
+        self.sender.close()
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=1.0)
+        if self.error is None:
+            self.state = "Disconnected"
+            self.message = "TCP transport closed"
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                try:
+                    item = self._queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if item is self._sentinel:
+                    self.sender.finish()
+                    self.state = "Complete"
+                    self.message = (
+                        f"Sent {self.sent_samples} samples to "
+                        f"{self.sender.host}:{self.sender.port}"
+                    )
+                    return
+                self.sender.send(item)
+                self.sent_samples += 1
+                self.last_sent_sequence = item.sequence
+                self.state = "Connected"
+                self.message = (
+                    f"Sent {self.sent_samples}/{self.enqueued_samples} samples"
+                )
+        except Exception as exc:
+            self._fail(f"TCP transport failed: {exc}", exc)
+        finally:
+            self.sender.close()
+
+    def _fail(self, message: str, error: Exception) -> None:
+        if self.error is None:
+            self.error = error
+            self.state = "Disconnected"
+            self.message = message
+        self._stop.set()
+        self.sender.close()
 
 
 def trajectory_options() -> dict[str, Path | None]:
@@ -98,8 +218,10 @@ class DashboardSession:
         self.speed = 1.0
         self.tcp_host = ""
         self.tcp_port = 8765
+        self.transport_state = "Local playback"
+        self.transport_message = "Pi host is not configured"
         self.capture_path: Path | None = None
-        self.sender = None
+        self.transport: AsyncTcpTransport | None = None
         self.capture = None
         self.event_log = None
         self.transport_finished = False
@@ -134,16 +256,31 @@ class DashboardSession:
         return f"{type(error).__name__}: {error}"
 
     def configure_transport(self, host: str, port: int, capture: str) -> None:
-        self.tcp_host = host.strip()
-        self.tcp_port = int(port)
+        new_host = host.strip()
+        new_port = int(port)
+        changed = (new_host, new_port) != (self.tcp_host, self.tcp_port)
+        self.tcp_host = new_host
+        self.tcp_port = new_port
         self.capture_path = Path(capture) if capture.strip() else None
+        if changed and self.tcp_host:
+            self.transport_state = "Not connected"
+            self.transport_message = f"Ready for {self.tcp_host}:{self.tcp_port}"
+        elif changed or not self.tcp_host:
+            self.transport_state = "Local playback"
+            self.transport_message = "Pi host is not configured"
 
     def _open_transport(self) -> None:
-        self.sender = (
-            TcpSampleSender(self.tcp_host, self.tcp_port)
+        self.transport = (
+            AsyncTcpTransport(self.tcp_host, self.tcp_port)
             if self.tcp_host
             else None
         )
+        if self.transport:
+            self.transport_state = self.transport.state
+            self.transport_message = self.transport.message
+        else:
+            self.transport_state = "Local playback"
+            self.transport_message = "Samples stay on the PC"
         self.capture = FileSampleSink(self.capture_path) if self.capture_path else None
         self.event_log = (
             FileEventLogSink(self.capture_path.with_suffix(".events.json"))
@@ -159,8 +296,9 @@ class DashboardSession:
             self.classifier_class = verdict.class_name
             self.verdicts.append((sample.timestamp_s, verdict))
         self.classifier_state = self.detector.state.value
-        if self.sender:
-            self.sender.send(sample)
+        if self.transport:
+            self.transport.send(sample)
+            self._sync_transport_status()
         if self.capture:
             self.capture.send(sample)
         self.processed_samples += 1
@@ -179,17 +317,53 @@ class DashboardSession:
     def _on_complete(self) -> None:
         if self.transport_finished:
             return
-        if self.sender:
-            self.sender.finish()
-            self.sender.close()
-        if self.capture:
-            self.capture.close()
-        if self.event_log:
-            self.event_log.write(self.stream.schedule.history)
-        self.transport_finished = True
+        try:
+            if self.transport:
+                try:
+                    self.transport.finish()
+                except Exception as exc:
+                    self.runner.errors.append(exc)
+                if self.transport.error is not None and not self.runner.errors:
+                    self.runner.errors.append(
+                        ConnectionError(self.transport.message)
+                    )
+                self._sync_transport_status()
+            if self.capture:
+                self.capture.close()
+            if self.event_log:
+                self.event_log.write(self.stream.schedule.history)
+        finally:
+            self.transport_finished = True
+            if not self.transport:
+                self.transport_state = "Complete"
+                self.transport_message = "Local playback complete"
+
+    def _sync_transport_status(self) -> None:
+        if not self.transport:
+            return
+        self.transport_state = self.transport.state
+        self.transport_message = self.transport.message
+
+    def transport_stats(self) -> dict[str, object]:
+        """Return transport counters for the live operator view."""
+        if not self.transport:
+            return {
+                "enqueued": 0,
+                "sent": 0,
+                "last_sequence": None,
+                "queued": 0,
+            }
+        return {
+            "enqueued": self.transport.enqueued_samples,
+            "sent": self.transport.sent_samples,
+            "last_sequence": self.transport.last_sent_sequence,
+            "queued": self.transport.queue_depth,
+        }
 
     def start(self) -> None:
         self._open_transport()
+        if self.transport:
+            self.transport.start()
         self.transport_finished = False
         self.runner.start()
 
@@ -201,7 +375,14 @@ class DashboardSession:
 
     def stop(self) -> None:
         self.runner.stop()
+        if self.transport:
+            self.transport.close()
         self._on_complete()
+
+    def retry(self) -> None:
+        """Restart a failed run from sample zero with a fresh transport."""
+        self.reset()
+        self.start()
 
     def reset(self) -> None:
         self.stop()

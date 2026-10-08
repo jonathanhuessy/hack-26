@@ -5,6 +5,15 @@
 		},
 		{
 			"path": "../../Bitbucket/ag_nav_receiver_testing"
+		},
+		{
+			"path": "../../Bitbucket/py_tsip"
+		},
+		{
+			"path": "../testautomation"
+		},
+		{
+			"path": "../amaethon"
 		}
 	],
 	"settings": {}

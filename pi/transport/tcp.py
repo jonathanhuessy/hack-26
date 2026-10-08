@@ -19,6 +19,7 @@ from .wire import (
     serialize_control,
     serialize_handshake,
     serialize_sample,
+    WireFormatError,
 )
 
 try:
@@ -58,19 +59,31 @@ class TcpSampleSender:
     def connect(self) -> None:
         if self.socket is not None:
             return
-        sock = socket.create_connection((self.host, self.port), self.timeout_s)
-        sock.settimeout(self.timeout_s)
-        stream = sock.makefile("rwb")
-        stream.write(serialize_handshake(self.handshake))
-        stream.flush()
-        response = stream.readline()
-        received = deserialize_handshake(response)
-        received.validate_compatible(self.handshake)
-        if received.role != "pi_receiver":
-            raise ConnectionError(f"unexpected handshake role {received.role!r}")
-        self.socket = sock
-        self._stream = stream
-        self.statuses.append(TransportStatus("connected", f"{self.host}:{self.port}"))
+        sock = None
+        stream = None
+        try:
+            sock = socket.create_connection((self.host, self.port), self.timeout_s)
+            sock.settimeout(self.timeout_s)
+            stream = sock.makefile("rwb")
+            stream.write(serialize_handshake(self.handshake))
+            stream.flush()
+            response = stream.readline()
+            received = deserialize_handshake(response)
+            received.validate_compatible(self.handshake)
+            if received.role != "pi_receiver":
+                raise ConnectionError(f"unexpected handshake role {received.role!r}")
+            self.socket = sock
+            self._stream = stream
+            self.statuses.append(TransportStatus("connected", f"{self.host}:{self.port}"))
+        except (ConnectionError, OSError, WireFormatError) as exc:
+            self.statuses.append(TransportStatus("disconnected", str(exc)))
+            if stream is not None:
+                stream.close()
+            if sock is not None:
+                sock.close()
+            raise ConnectionError(
+                f"could not connect to Pi listener at {self.host}:{self.port}: {exc}"
+            ) from exc
 
     def send(self, sample: MeasuredSample) -> None:
         self.connect()
@@ -103,8 +116,12 @@ class TcpSampleSender:
     def finish(self) -> None:
         """Terminate a live stream cleanly before closing its socket."""
         if self.socket is not None:
-            self._stream.write(serialize_control(MESSAGE_END))
-            self._stream.flush()
+            try:
+                self._stream.write(serialize_control(MESSAGE_END))
+                self._stream.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                self.statuses.append(TransportStatus("disconnected", str(exc)))
+                raise ConnectionError("TCP receiver disconnected before stream end") from exc
 
     def close(self) -> None:
         if self.socket is not None:

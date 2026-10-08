@@ -14,6 +14,7 @@ try:
         MAX_DISPLAY_SAMPLES,
         MAX_PLOT_POINTS,
         PATH_COLORS,
+        PATH_LABELS,
         trajectory_options as shared_trajectory_options,
     )
 except ImportError:  # pragma: no cover
@@ -26,6 +27,7 @@ except ImportError:  # pragma: no cover
         MAX_DISPLAY_SAMPLES,
         MAX_PLOT_POINTS,
         PATH_COLORS,
+        PATH_LABELS,
         trajectory_options as shared_trajectory_options,
     )
 
@@ -67,18 +69,23 @@ def _plotly_figures(session: DashboardSession):
     for state, color in PATH_COLORS.items():
         px = [value if current == state else None for value, current in zip(x, states)]
         py = [value if current == state else None for value, current in zip(y, states)]
-        path.add_trace(go.Scatter(x=px, y=py, mode="lines", name=state))
+        path.add_trace(go.Scatter(
+            x=px,
+            y=py,
+            mode="lines",
+            name=PATH_LABELS.get(state, state),
+        ))
     path.update_layout(title="Vehicle path", xaxis_title="X [m]", yaxis_title="Y [m]")
 
     edge = go.Figure()
-    edge.add_trace(go.Scatter(x=time_s, y=delta, name="delta"))
-    edge.add_trace(go.Scatter(x=time_s, y=vx, name="Vx"))
+    edge.add_trace(go.Scatter(x=time_s, y=delta, name="Steering Angle"))
+    edge.add_trace(go.Scatter(x=time_s, y=vx, name="Forward Speed"))
     edge.update_layout(title="Edge signals", xaxis_title="time [s]")
 
     plant = go.Figure()
-    plant.add_trace(go.Scatter(x=time_s, y=yaw, name="r"))
-    plant.add_trace(go.Scatter(x=time_s, y=ay, name="ay"))
-    plant.update_layout(title="Plant signals", xaxis_title="time [s]")
+    plant.add_trace(go.Scatter(x=time_s, y=yaw, name="Yaw Rate"))
+    plant.add_trace(go.Scatter(x=time_s, y=ay, name="Lateral Acceleration"))
+    plant.update_layout(title="Tractor Signals", xaxis_title="time [s]")
 
     confidence = go.Figure()
     if session.verdicts:
@@ -104,52 +111,80 @@ def _plotly_figures(session: DashboardSession):
     metadata = getattr(session.stream, "metadata", {})
     class_name = str(metadata.get("className", "nominal")).upper()
     change_time = metadata.get("changeTimeS")
+    added_mass = (
+        float(metadata.get("addedMassKg", 0.0))
+        if class_name in {"A", "AB"}
+        else 0.0
+    )
+    kf = (
+        float(metadata.get("kf", 1.0))
+        if class_name in {"B", "AB"}
+        else 1.0
+    )
     if class_name in {"A", "B", "AB"} and change_time is not None:
         change_time = float(change_time)
-        added_mass = float(metadata.get("addedMassKg", 0.0))
-        kf = float(metadata.get("kf", 1.0))
         reference_time = [0.0, change_time, change_time, end_time]
         mass_reference = [0.0, 0.0, added_mass, added_mass]
         stiffness_reference = [1.0, 1.0, kf, kf]
-        mass.add_trace(go.Scatter(
-            x=reference_time,
-            y=mass_reference,
-            mode="lines",
-            name="True reference",
-            line={"dash": "dash", "color": "#d62728"},
-        ))
-        stiffness.add_trace(go.Scatter(
-            x=reference_time,
-            y=stiffness_reference,
-            mode="lines",
-            name="True reference",
-            line={"dash": "dash", "color": "#d62728"},
-        ))
-    if session.verdicts:
-        mass_points = [(t, v.delta_m_kg) for t, v in session.verdicts if v.delta_m_kg is not None]
-        stiffness_points = [(t, v.k_f) for t, v in session.verdicts if v.k_f is not None]
-        mass.add_trace(go.Scatter(
-            x=[item[0] for item in mass_points],
-            y=[item[1] for item in mass_points],
-            mode="lines+markers",
-            name="delta_m",
-        ))
-        stiffness.add_trace(go.Scatter(
-            x=[item[0] for item in stiffness_points],
-            y=[item[1] for item in stiffness_points],
-            mode="lines+markers",
-            name="k_f",
-        ))
+    else:
+        reference_time = [0.0, end_time]
+        mass_reference = [0.0, 0.0]
+        stiffness_reference = [1.0, 1.0]
+    mass.add_trace(go.Scatter(
+        x=reference_time,
+        y=mass_reference,
+        mode="lines",
+        name="Reference",
+        line={"dash": "dash", "color": "#d62728"},
+    ))
+    stiffness.add_trace(go.Scatter(
+        x=reference_time,
+        y=stiffness_reference,
+        mode="lines",
+        name="Reference",
+        line={"dash": "dash", "color": "#d62728"},
+    ))
+
+    def estimate_series(attribute: str, baseline: float) -> tuple[list[float], list[float]]:
+        times = [0.0]
+        values = [baseline]
+        current = baseline
+        for timestamp, verdict in session.verdicts:
+            estimate = getattr(verdict, attribute)
+            if estimate is None:
+                continue
+            timestamp = float(timestamp)
+            times.extend((timestamp, timestamp))
+            values.extend((current, float(estimate)))
+            current = float(estimate)
+        times.append(end_time)
+        values.append(current)
+        return times, values
+
+    mass_time, mass_estimate = estimate_series("delta_m_kg", 0.0)
+    stiffness_time, stiffness_estimate = estimate_series("k_f", 1.0)
+    mass.add_trace(go.Scatter(
+        x=mass_time,
+        y=mass_estimate,
+        mode="lines",
+        name="Current Estimate",
+    ))
+    stiffness.add_trace(go.Scatter(
+        x=stiffness_time,
+        y=stiffness_estimate,
+        mode="lines",
+        name="Current Estimate",
+    ))
     mass.update_layout(
-        title="delta_m estimate",
+        title="Δ Mass",
         xaxis_title="time [s]",
-        yaxis_title="delta_m [kg]",
+        yaxis_title="Δ Mass [kg]",
         xaxis_range=[0, end_time],
     )
     stiffness.update_layout(
-        title="k_f estimate",
+        title="Front Cornering Stiffness Estimate",
         xaxis_title="time [s]",
-        yaxis_title="k_f",
+        yaxis_title="Front Cornering Stiffness Factor",
         xaxis_range=[0, end_time],
     )
     return path, edge, plant, confidence, mass, stiffness
@@ -164,14 +199,16 @@ def _render_dashboard(st, session: DashboardSession) -> None:
     columns = st.columns(2)
     for figure, column in zip(figures, columns * 3):
         with column:
-            st.plotly_chart(figure, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
 
 
 def _render_live(st, session: DashboardSession) -> None:
     """Render one bounded telemetry update without rerunning the controls."""
+    session._sync_transport_status()
     session.drain()
     session.commands = list(getattr(session.stream.schedule, "history", ()))
     configuration = session.configuration_status()
+    transport_stats = session.transport_stats()
 
     overview = st.columns([1, 1.35, 1])
     with overview[0].container(border=True):
@@ -180,6 +217,13 @@ def _render_live(st, session: DashboardSession) -> None:
         run_cols[0].metric("Source", "MATLAB" if not session.supports_events else "Python")
         run_cols[1].metric("Playback", f"{session.speed:.1f}x")
         run_cols[0].metric("Time", f"{session.stream.time_s:.1f}s")
+        st.caption(
+            f"Samples produced: {session.processed_samples} | "
+            f"sent to Pi: {transport_stats['sent']} | "
+            f"queued: {transport_stats['queued']}"
+        )
+        if session.tcp_host:
+            st.caption(f"Transport: {session.transport_state} — {session.transport_message}")
     classifier_status = (
         "Detected Change"
         if session.classifier_class not in (None, "nominal")
@@ -303,21 +347,34 @@ def main() -> None:
             st.rerun()
         speed = st.slider("Playback speed", 0.1, 20.0, session.speed, 0.1)
         session.set_speed(speed)
-        host = st.text_input("Pi host (optional)", value=session.tcp_host)
+        st.subheader("Direct Pi connection")
+        host = st.text_input("Pi host or IP (optional)", value=session.tcp_host)
         port = st.number_input("Pi port", 1, 65535, session.tcp_port)
         capture = st.text_input("Capture path (optional)")
         session.configure_transport(host, port, capture)
+        if session.tcp_host:
+            st.caption(f"Status: {session.transport_state}")
+            st.caption(session.transport_message)
+        else:
+            st.caption("Status: local playback only")
         st.subheader("Playback")
-        if st.button("Start", use_container_width=True):
+        if st.button("Start streaming", disabled=session.running, width="stretch"):
             session.start()
-        if st.button("Pause", use_container_width=True):
+        if st.button("Pause", width="stretch"):
             session.pause()
-        if st.button("Resume", use_container_width=True):
+        if st.button("Resume", width="stretch"):
             session.resume()
-        if st.button("Reset", use_container_width=True):
+        if st.button("Reset", width="stretch"):
             session.reset()
-        if st.button("Stop", use_container_width=True):
+        if st.button("Stop streaming", disabled=not session.running, width="stretch"):
             session.stop()
+        if session.runner.errors and st.button(
+            "Retry from beginning",
+            disabled=session.running,
+            width="stretch",
+        ):
+            session.retry()
+            st.rerun()
         st.caption(
             f"{'fixed MATLAB playback' if not session.supports_events else 'Python synthesized'}; "
             f"{session.stream.time_s:.1f}s / "

@@ -88,9 +88,19 @@ def run(
     display.show_class("nominal")
     events = []
     printed_verdict_ids: set[str] = set()
+    handshake_count = 0
     started_at = time.monotonic()
     last_status_at = started_at
     for sample in source:
+        current_handshakes = sum(
+            status.kind == "handshake"
+            for status in getattr(source, "statuses", ())
+        )
+        if current_handshakes > handshake_count:
+            # A new PC connection is a new scenario. Clear any latched
+            # verdict before processing its first sample.
+            display.show_class("nominal")
+            handshake_count = current_handshakes
         event = pipeline.push(sample)
         events.append(event)
         consumer_result = event.consumer_result

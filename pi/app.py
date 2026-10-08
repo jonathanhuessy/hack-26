@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import time
 
 try:
     from .contracts import ExecutionConfig
@@ -44,6 +45,7 @@ def run(
     realtime: bool = False,
     tcp_listen: tuple[str, int] | None = None,
     transport_file: str | Path | None = None,
+    status_interval_s: float = 0.5,
 ) -> int:
     default_weights = Path(__file__).resolve().parents[1] / "models" / "export" / "weights.mat"
     weight_path = Path(weights) if weights else (default_weights if default_weights.exists() else None)
@@ -74,12 +76,32 @@ def run(
         source = NoisySource(source, seed=noise_seed)
     detector = TurnDetector(model)
     pipeline = EdgePipeline(detector, ExecutionConfig(realtime=realtime))
-    events = pipeline.run(source)
+    events = []
+    started_at = time.monotonic()
+    last_status_at = started_at
+    for sample in source:
+        event = pipeline.push(sample)
+        events.append(event)
+        now = time.monotonic()
+        if status_interval_s > 0 and now - last_status_at >= status_interval_s:
+            age = max(0.0, now - started_at - sample.timestamp_s)
+            print(
+                f"status source={source_name} mode={_source_mode(source_name)} "
+                f"detector={detector.state.value} samples={len(events)} "
+                f"sample_age_s={age:.3f}"
+            )
+            last_status_at = now
+    flushed = pipeline.flush()
     accepted = sum(event.result.status.value in ("accepted", "gap") for event in events)
     rejected = len(events) - accepted
     verdicts = [event.consumer_result.new_verdict for event in events
                 if event.consumer_result is not None and event.consumer_result.new_verdict is not None]
-    print(f"source={source_name} realtime={realtime} samples={accepted} rejected={rejected}")
+    if flushed is not None and getattr(flushed, "new_verdict", None) is not None:
+        verdicts.append(flushed.new_verdict)
+    print(
+        f"source={source_name} mode={_source_mode(source_name)} "
+        f"realtime={realtime} samples={accepted} rejected={rejected}"
+    )
     for verdict in verdicts:
         print(
             f"{verdict.window_id}: class={verdict.class_name} "
@@ -88,10 +110,19 @@ def run(
             f"t={verdict.timestamp_s:.2f}s"
         )
     print(f"processed {len(events)} samples, {len(verdicts)} verdicts")
+    print(f"detector_state={detector.state.value}")
     statuses = getattr(source, "statuses", ())
     for status in statuses:
         print(f"transport_status={status.kind} message={status.message}")
     return 0
+
+
+def _source_mode(source_name: str) -> str:
+    if source_name.startswith("tcp://"):
+        return "separated"
+    if source_name.startswith("local/"):
+        return "co-located"
+    return "replay"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -108,6 +139,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--realtime", action="store_true", help="pace samples at the configured sample period")
     parser.add_argument("--weights", type=Path, help="MATLAB weights.mat artifact")
     parser.add_argument("--noise-seed", type=int, help="deterministic sensor-noise seed")
+    parser.add_argument(
+        "--status-interval",
+        type=float,
+        default=0.5,
+        help="seconds between live status lines; zero disables them",
+    )
     parser.add_argument(
         "--tcp-listen",
         metavar="HOST:PORT",
@@ -141,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         realtime=args.realtime,
         tcp_listen=tcp_listen,
         transport_file=args.transport_file,
+        status_interval_s=args.status_interval,
     )
 
 

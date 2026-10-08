@@ -1,11 +1,14 @@
 function x = turnFeatures(win, straight, fs)
-%TURNFEATURES Feature vector of one turn window (contract 2); names in turnFeatureNames.
+%TURNFEATURES Exploratory 35-feature vector; names in turnFeatureNames.
 %   x = turnFeatures(win, straight, fs)
 %     win       [delta Vx r ay] measured, marginS before turn entry to marginS after exit
 %     straight  [delta Vx r ay] measured on the preceding straight (may have 0 rows)
 %     fs        sample rate [Hz]
 %   Uses only causal filters with fixed coefficients, sums, median and explicit DFTs on a
 %   fixed frequency grid, so the Python port is line by line.
+%   This offline exploratory function retains ay-derived features. The deployable
+%   H1-selected feature subset is defined separately by the Phase 0 three-input
+%   contract and requires only [delta Vx r].
 %   e = r - Vx*tan(delta)/L: yaw rate not explained by kinematics.
 %   q = ay - Vx*r: lateral acceleration not explained by Vx*r (rear slip dynamics at the IMU).
 

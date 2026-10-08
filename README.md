@@ -14,6 +14,33 @@ Preparation phase (simulator, labelled raw dataset): done, see the checklist in 
 - `arion_630_parameters.m` calls `tf2ss_observable` (from the `icons-engineering-toolbox`). It must be on the MATLAB path on your machine. It is not needed on the Raspberry Pi.
 - Raspberry Pi side: Python 3 with NumPy and SciPy.
 
+## Phase 0 PI input contract
+
+The deployable edge pipeline requires three measured inputs at 100 Hz:
+
+| Input | Unit | Meaning |
+|---|---|---|
+| `delta` | rad | Front-wheel steering angle, positive left |
+| `Vx` | m/s | Longitudinal speed, positive forward |
+| `r` | rad/s | Yaw rate, positive counter-clockwise |
+
+`ay`, labels, parameters, and simulator states are optional diagnostics for
+analysis and replay generation. They are not required by the Pi edge path and
+must not be used as detector inputs. The complete contract is documented in
+[`docs/phase-0-interface-contract.md`](docs/phase-0-interface-contract.md).
+
+The Phase 0 source-neutral seam can be smoke-tested without MATLAB or network
+connectivity:
+
+```bash
+python -m unittest discover -s pi -p "test_*.py"
+```
+
+This runs the local/replay contract tests with the checked-in fixture at
+`pi/test_vectors/phase0_three_input.json`. MATLAB replay metadata is generated
+by `scripts/export_pi_test_vectors.m`; plant numerical parity remains covered
+separately by `pi/test_plant_parity.py`.
+
 ## Quickstart (MATLAB)
 
 Open MATLAB in the repo root and run:
@@ -53,7 +80,12 @@ r   = load('data/runs/run_00001.mat');             % r.tt (timetable) and r.meta
 tt  = change_detector.addSensorNoise(r.tt, [], 42);   % adds deltaMeas, VxMeas, rMeas, ayMeas
 ```
 
-Measured signals the classifier may use: `deltaMeas` (front wheel angle), `VxMeas` (speed), `rMeas` (gyro yaw rate), `ayMeas` (lateral acceleration at the IMU). The clean columns (`delta`, `Vx`, `r`, `ay`) and the model states (`ydot`, `alphaF`, `X`, `Y`, `psi`) are for analysis only, they are not available on the tractor.
+Measured signals in the deployable classifier contract: `deltaMeas` (front
+wheel angle), `VxMeas` (speed), and `rMeas` (gyro yaw rate). `ayMeas` remains
+available for exploratory MATLAB features and diagnostics, but is optional and
+not required by the Pi edge pipeline. The clean columns (`delta`, `Vx`, `r`,
+`ay`) and model states (`ydot`, `alphaF`, `X`, `Y`, `psi`) are for analysis
+only; they are not available on the tractor edge contract.
 
 Labels:
 

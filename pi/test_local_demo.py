@@ -4,12 +4,28 @@ import numpy as np
 
 try:
     from .detector import TurnDetector
-    from .local_plant import LocalScenario, NOMINAL_PARAMS, build_source, scenario_parameters
+    from .local_plant import (
+        EventSchedule,
+        LocalScenario,
+        NOMINAL_PARAMS,
+        VehicleEvent,
+        build_source,
+        event_preset,
+        scenario_parameters,
+    )
     from .model import dummy_model
     from .pipeline import EdgePipeline
 except ImportError:
     from detector import TurnDetector
-    from local_plant import LocalScenario, NOMINAL_PARAMS, build_source, scenario_parameters
+    from local_plant import (
+        EventSchedule,
+        LocalScenario,
+        NOMINAL_PARAMS,
+        VehicleEvent,
+        build_source,
+        event_preset,
+        scenario_parameters,
+    )
     from model import dummy_model
     from pipeline import EdgePipeline
 
@@ -92,6 +108,68 @@ class LocalScenarioTests(unittest.TestCase):
         after = samples[3001].diagnostics["params"]
         self.assertAlmostEqual(before[0], NOMINAL_PARAMS[0])
         self.assertGreater(after[0], NOMINAL_PARAMS[0])
+
+    def test_named_event_aliases_match_training_scenarios(self):
+        alias_start, alias_end = scenario_parameters(
+            LocalScenario(name="implement_attached", change_type="step")
+        )
+        scenario_start, scenario_end = scenario_parameters(
+            LocalScenario(name="A", change_type="step")
+        )
+        self.assertEqual(alias_start, scenario_start)
+        self.assertEqual(alias_end, scenario_end)
+
+        alias_start, alias_end = scenario_parameters(
+            LocalScenario(name="tire_flat", change_type="step")
+        )
+        scenario_start, scenario_end = scenario_parameters(
+            LocalScenario(name="B", change_type="step")
+        )
+        self.assertEqual(alias_start, scenario_start)
+        self.assertEqual(alias_end, scenario_end)
+
+    def test_event_schedule_composes_implement_and_tire_change(self):
+        schedule = EventSchedule(
+            tuple(NOMINAL_PARAMS),
+            (
+                event_preset("implement_attached", start_s=10.0),
+                event_preset("tire_flat", start_s=20.0),
+            ),
+        )
+        before = schedule.parameter_at(9.99)
+        after_implement = schedule.parameter_at(15.0)
+        after_both = schedule.parameter_at(25.0)
+        np.testing.assert_allclose(before, NOMINAL_PARAMS)
+        self.assertGreater(after_implement[0], NOMINAL_PARAMS[0])
+        self.assertEqual(after_implement[4], NOMINAL_PARAMS[4])
+        self.assertGreater(after_both[0], NOMINAL_PARAMS[0])
+        self.assertLess(after_both[4], NOMINAL_PARAMS[4])
+        self.assertEqual(schedule.active_events(15.0), ("implement_attached",))
+        self.assertEqual(
+            schedule.active_events(25.0),
+            ("implement_attached", "tire_flat"),
+        )
+
+    def test_event_schedule_ramp_and_reverse(self):
+        event = VehicleEvent(name="A", start_s=10.0, end_s=20.0)
+        schedule = EventSchedule(tuple(NOMINAL_PARAMS), (event,))
+        self.assertEqual(schedule.parameter_at(9.0), list(NOMINAL_PARAMS))
+        midpoint = schedule.parameter_at(15.0)
+        endpoint = schedule.parameter_at(20.0)
+        self.assertGreater(midpoint[0], NOMINAL_PARAMS[0])
+        self.assertLess(midpoint[0], endpoint[0])
+        reverse = EventSchedule(
+            tuple(NOMINAL_PARAMS),
+            (VehicleEvent(name="A", start_s=10.0, end_s=20.0, reverse=True),),
+        )
+        self.assertGreater(reverse.parameter_at(9.0)[0], NOMINAL_PARAMS[0])
+        self.assertEqual(reverse.parameter_at(20.0), list(NOMINAL_PARAMS))
+
+    def test_invalid_event_is_rejected(self):
+        with self.assertRaises(ValueError):
+            VehicleEvent(name="new_physics", start_s=0.0)
+        with self.assertRaises(ValueError):
+            VehicleEvent(name="A", start_s=20.0, end_s=10.0)
 
 
 if __name__ == "__main__":

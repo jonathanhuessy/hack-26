@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import queue
@@ -156,6 +156,20 @@ class FileSampleSink:
             self._file.write(serialize_control(MESSAGE_END).decode("utf-8"))
             self._file.close()
             self._file = None
+
+
+class FileEventLogSink:
+    """Write runtime event commands beside a transport capture."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    def write(self, commands) -> None:
+        records = [asdict(command) for command in commands]
+        self.path.write_text(
+            json.dumps(records, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
 
 class FileSampleSource:

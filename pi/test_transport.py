@@ -3,10 +3,13 @@ import threading
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 try:
     from .contracts import MeasuredSample
     from .transport.adapters import (
         FaultPolicy,
+        FileEventLogSink,
         FileSampleSink,
         FileSampleSource,
         LoopbackTransport,
@@ -21,7 +24,13 @@ try:
     )
 except ImportError:
     from contracts import MeasuredSample
-    from transport.adapters import FaultPolicy, FileSampleSink, FileSampleSource, LoopbackTransport
+    from transport.adapters import (
+        FaultPolicy,
+        FileEventLogSink,
+        FileSampleSink,
+        FileSampleSource,
+        LoopbackTransport,
+    )
     from transport.tcp import TcpConfig, TcpSampleSender, TcpSampleSource
     from transport.wire import CompatibilityError, Handshake, WireFormatError, deserialize_sample, serialize_sample
 
@@ -46,6 +55,19 @@ class TransportTests(unittest.TestCase):
         decoded = deserialize_sample(serialize_sample(original))
         self.assertEqual(decoded, original)
         self.assertEqual(decoded.edge_payload(), original.edge_payload())
+
+    def test_json_round_trip_converts_numpy_diagnostics(self):
+        original = MeasuredSample(
+            delta=0.0,
+            vx=4.0,
+            yaw_rate=0.0,
+            timestamp_s=0.0,
+            sequence=0,
+            diagnostics={"params": np.asarray([1.0, 2.0]), "ay": np.float64(0.1)},
+        )
+        decoded = deserialize_sample(serialize_sample(original))
+        self.assertEqual(decoded.diagnostics["params"], [1.0, 2.0])
+        self.assertAlmostEqual(decoded.diagnostics["ay"], 0.1)
 
     def test_wire_rejects_malformed_and_nonfinite_records(self):
         with self.assertRaises(WireFormatError):
@@ -81,6 +103,19 @@ class TransportTests(unittest.TestCase):
             sink.close()
             received = list(FileSampleSource(path))
         self.assertEqual(received, samples())
+
+    def test_event_log_sink_writes_commands(self):
+        try:
+            from .streaming import EventCommand
+        except ImportError:
+            from streaming import EventCommand
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.json"
+            FileEventLogSink(path).write(
+                [EventCommand("add", "implement_attached", 1.0)]
+            )
+            self.assertIn("implement_attached", path.read_text(encoding="utf-8"))
 
     def test_tcp_sender_and_receiver_round_trip(self):
         receiver = TcpSampleSource(

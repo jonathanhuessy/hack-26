@@ -83,15 +83,28 @@ class TcpSampleSender:
             self.close()
             raise ConnectionError("TCP receiver disconnected") from exc
 
-    def send_samples(self, samples: Iterable[MeasuredSample]) -> None:
+    def send_samples(
+        self,
+        samples: Iterable[MeasuredSample],
+        *,
+        realtime: bool = False,
+    ) -> None:
         try:
+            previous_timestamp: float | None = None
             for sample in samples:
+                if realtime and previous_timestamp is not None:
+                    time.sleep(max(0.0, sample.timestamp_s - previous_timestamp))
                 self.send(sample)
-            if self.socket is not None:
-                self._stream.write(serialize_control(MESSAGE_END))
-                self._stream.flush()
+                previous_timestamp = sample.timestamp_s
+            self.finish()
         finally:
             self.close()
+
+    def finish(self) -> None:
+        """Terminate a live stream cleanly before closing its socket."""
+        if self.socket is not None:
+            self._stream.write(serialize_control(MESSAGE_END))
+            self._stream.flush()
 
     def close(self) -> None:
         if self.socket is not None:

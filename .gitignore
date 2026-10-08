@@ -3,6 +3,7 @@ slprj/
 *.asv
 *.autosave
 data/runs/
+data/generated_trajectories/
 data/*.zip
 data/generate_*.txt
 __pycache__/

@@ -67,6 +67,18 @@ def _dumps(value: Mapping[str, Any]) -> bytes:
         raise WireFormatError(f"record is not JSON-serializable: {exc}") from exc
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert array-scalar diagnostics without weakening JSON validation."""
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return _json_safe(tolist())
+    return value
+
+
 @dataclass(frozen=True)
 class Handshake:
     """Compatibility declaration exchanged before sample records."""
@@ -155,7 +167,7 @@ def serialize_sample(sample: MeasuredSample) -> bytes:
             "delta": sample.delta,
             "Vx": sample.vx,
             "r": sample.yaw_rate,
-            "diagnostics": dict(sample.diagnostics),
+            "diagnostics": _json_safe(dict(sample.diagnostics)),
         }
     )
 

@@ -6,7 +6,7 @@ The full design, decisions and progress checklist are in [plan.md](plan.md). Rea
 
 ## Status
 
-Preparation phase (simulator, labelled raw dataset): see the checklist in `plan.md`. Hackathon-day work (features, training, Simulink inference model, Pi demo) is not started.
+Preparation phase (simulator, labelled raw dataset): done, see the checklist in `plan.md`. Hackathon day: H1 (turn detection and features) is done; training, the Simulink inference model and the Pi demo are in progress.
 
 ## Requirements
 
@@ -179,6 +179,36 @@ How `pStart` and `pEnd` relate to the scenario:
 
 `check_detectability.m` compares a changed vehicle with the nominal one on the same run and computes $d^2 = \sum \Delta r^2/\sigma_r^2 + \sum \Delta a_y^2/\sigma_{a_y}^2$ (difference signal energy in units of sensor noise). $d^2 \ge 25$ counts as detectable. Results and the reasoning behind the dataset ranges are in `plan.md`, section P6.
 
+## Turn detection and features (H1)
+
+The classifier works per end-of-row turn. Each detected turn gives one feature vector computed from the measured signals only.
+
+```matlab
+addpath(pwd); addpath('scripts');
+build_features          % all runs -> data/features.mat (about 2 min)
+explore_features        % single-feature separation, baselines -> data/results/explore_features.png
+select_features         % permutation importance and feature subsets (basis of the 18-feature choice)
+plot_run(1100)          % visual check: path, detected turns, windows and trigger signals of one run
+```
+
+| Function | Purpose |
+|---|---|
+| `change_detector.turnTriggerConfig` | all trigger and window thresholds (shared by MATLAB, Simulink and the Pi) |
+| `change_detector.findTurns` | turn trigger on measured $\delta$ and $r$: entry at filtered \|$\delta$\| > 5°, exit after 2 s below 3°, heading change ≥ 120° |
+| `change_detector.turnWindow` | turn window (5 s before entry to 5 s after exit) and the preceding straight (last 20 s with $V_x$ > 3 m/s) |
+| `change_detector.turnFeatures` | 35 features of one window; names in `turnFeatureNames` |
+| `change_detector.selectedFeatureNames` | **the 18 features used for training and on the Pi**; they need only $\delta$, $V_x$ and $r$ |
+
+`data/features.mat` contains `F` (one row per detected turn: `runId`, `split`, `class`, `changeType`, `turn`, `trueTurn`, `isOmega`, `cls`, `dm`, `kf` and the feature matrix `X`, 35 columns), `featureNames` and `info`. Sensor noise seed per run: 5000 + run id. The meaning of each selected feature and the validation results are in `plan.md`, H1.
+
+Pick the selected columns by name:
+
+```matlab
+S = load('data/features.mat');
+[~, cols] = ismember(change_detector.selectedFeatureNames(), S.featureNames);
+X18 = S.F.X(:, cols);
+```
+
 ## Raspberry Pi
 
 `pi/plant.py` is a line-by-line Python port of the plant. On the Pi:
@@ -190,14 +220,17 @@ python3 test_plant_parity.py     # compares against pi/test_vectors/plant_run.ma
 
 Regenerate the test vector after any change to the plant: run `scripts/export_pi_test_vectors.m` in MATLAB.
 
+Test vectors for porting the turn trigger and features (`pi/features.py`): `pi/test_vectors/features_<class>.mat`, one validation run per class (nominal, A, B, AB) written by `scripts/export_feature_test_vectors.m`. Each file holds the measured signals of the whole run, the `findTurns` result, the window and straight row ranges, the expected 35 features per turn, the indices of the 18 selected features, and all filter coefficients. Indices are 1-based (MATLAB); subtract 1 in Python. The header of the script lists all fields.
+
 ## Layout
 
 ```
-+change_detector/   MATLAB package: parameters, scenarios, maneuver, disturbance, plant wrapper, dataset, sensor noise
++change_detector/   MATLAB package: parameters, scenarios, maneuver, disturbance, plant wrapper, dataset, sensor noise,
+                    turn trigger, windows, features
 models/             tractor_plant.slx (Simulink plant, fixed-step ode4, 0.01 s)
-scripts/            checks, dataset generation, test vector export
-data/               index.mat, config.mat, runs/ (large files are not in git)
-pi/                 Python port for the Raspberry Pi and its parity test
+scripts/            checks, dataset generation, features (build, explore, select, plot_run), test vector export
+data/               index.mat, config.mat, features.mat, results/, runs/ (large files are not in git)
+pi/                 Python port for the Raspberry Pi, parity tests, test_vectors/
 plan.md             design, decisions, progress
 ```
 

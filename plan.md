@@ -295,7 +295,7 @@ Tracks B and C start with random weights so the plumbing (buffer, trigger, featu
     | No $a_y$ features | 25 | 0.74 | 0.84 |
     | **No $a_y$ + weakest dropped (chosen)** | **18** | **0.75** | **0.85** |
 
-    Differences of about ±0.02 are within the spread between training seeds. The chosen set needs only 3 sensors ($\delta$, $V_x$, $r$): no accelerometer, so it is insensitive to the 3–7 Hz vibration seen in the real log, and the Pi port is smaller. `turnFeatures` still computes all 35; training and the Pi use the 18 by name.
+    Differences of about ±0.02 are within the spread between training seeds. The chosen set needs only 3 sensors ($\delta$, $V_x$, $r$): no accelerometer, so it is insensitive to the 3–7 Hz vibration seen in the real log, and the Pi port is smaller. `turnFeatures` still computes all 35; training and the Pi use the 18 by name from `change_detector.selectedFeatureNames()` (single source of truth). Test vectors for the Python port of trigger and features: `pi/test_vectors/features_<class>.mat` (`scripts/export_feature_test_vectors.m`).
 
     | Feature | Window | Meaning |
     |---|---|---|

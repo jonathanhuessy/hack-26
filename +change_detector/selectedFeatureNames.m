@@ -1,0 +1,13 @@
+function names = selectedFeatureNames()
+%SELECTEDFEATURENAMES The 18 turnFeatures used by the classifier and regressor (H1 decision).
+%   Single source of truth for training, weights.mat, Simulink and the Pi. Needs only
+%   delta, Vx and r (no a_y features). Reasoning and per-feature meaning: plan.md, H1.
+%   Column indices into the turnFeatures vector:
+%       [~, idx] = ismember(change_detector.selectedFeatureNames(), change_detector.turnFeatureNames());
+
+names = {'Vturn', 'oppSteer', ...
+    'bpE_0.2-0.6', 'bpE_0.6-1.0', 'bpE_1.0-1.5', 'bpE_1.5-2.0', 'bpE_2.0-3.0', ...
+    'fpkE', 'fAR', 'zetaAR', ...
+    'gainR_0.1-0.4', 'phaseR_0.1-0.4', 'phaseR_0.4-0.8', 'ssGain', ...
+    'gainS_r', 'phaseS_r', 'bpS_1.0-2.0', 'fpkS'};
+end
